@@ -97,6 +97,28 @@
         <el-button type="primary" @click="chooseContact">{{t('selectContacts')}}</el-button>
       </div>
     </el-dialog>
+
+    <el-dialog
+      v-model="showSignature"
+      class="signature-dialog"
+      title="邮件签名"
+      width="560px"
+      :close-on-click-modal="false"
+    >
+      <div class="signature-label">请输入签名，支持多行：</div>
+      <el-input
+        v-model="signatureDraft"
+        type="textarea"
+        :rows="8"
+        resize="vertical"
+        placeholder="例如：\nBest regards,\nGavin\nQJMOTOR International"
+        autofocus
+      />
+      <template #footer>
+        <el-button @click="showSignature = false">取消</el-button>
+        <el-button type="primary" @click="saveSignature">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 <script setup>
@@ -146,6 +168,8 @@ const contactsTabRef = ref({})
 const showContacts = ref(false)
 const showCc = ref(false)
 const showBcc = ref(false)
+const showSignature = ref(false)
+const signatureDraft = ref('')
 const mySelect = ref()
 let selectStatus = false
 const backReply = reactive({
@@ -176,6 +200,12 @@ const selectRecipientList = ref([])
 
 function signatureKey(accountId) { return `cloudmail-signature-${accountId}` }
 function getSignature(accountId) { return localStorage.getItem(signatureKey(accountId)) || '' }
+function signatureToText(value) {
+  if (!value) return ''
+  const textarea = document.createElement('textarea')
+  textarea.innerHTML = value
+  return textarea.value.replace(/<br\s*\/?>(?=)/gi, '\n').replace(/<br\s*\/?>(?=)/gi, '\n')
+}
 function appendSignature(content, accountId) {
   const signature = getSignature(accountId)
   if (!signature || content.includes('data-cloudmail-signature="1"')) return content
@@ -189,10 +219,19 @@ function setSignatureFromAccount() {
 
 function editSignature() {
   const current = getSignature(form.accountId)
-  const value = window.prompt('请输入签名（换行会自动保留）：', current.replace(/<br\s*\/?>(<br\s*\/?>)?/gi, '\n'))
-  if (value === null) return
-  const html = value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>')
+  signatureDraft.value = signatureToText(current)
+  showSignature.value = true
+}
+
+function saveSignature() {
+  const value = signatureDraft.value
+  const html = value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, '<br>')
   localStorage.setItem(signatureKey(form.accountId), html)
+  showSignature.value = false
   ElMessage({message: value ? '签名已保存' : '签名已清除', type: 'success', plain: true})
 }
 
@@ -222,7 +261,6 @@ function deleteContact() {
 }
 
 function chooseContact() {
-
   const contactList = contactsTabRef.value.getSelectionRows().map(item => item.email);
   contactList.forEach(item => {
     if (!form.receiveEmail.includes(item)) {
@@ -254,7 +292,6 @@ const openSelect = () => {
 }
 
 function inputChange(value) {
-
   selectRecipientList.value = writerStore.sendRecipientRecord.filter(item => value && !form.receiveEmail.includes(item) && item.startsWith(value)).slice(0, 10);
 
   if (!selectStatus && selectRecipientList.value.length > 0) {
@@ -268,7 +305,6 @@ function inputChange(value) {
 }
 
 function addTagChange(val) {
-
   const emails = Array.from(new Set(
       val.split(/[,，]/).map(item => item.trim()).filter(item => item)
   ));
@@ -293,7 +329,6 @@ function clearContent() {
   }).then(() => {
     resetForm()
   })
-
 }
 
 function delAtt(index) {
@@ -306,25 +341,20 @@ function chooseFile() {
   doc.multiple = true;
   doc.click()
   doc.onchange = async (e) => {
-
     const fileList = e.target.files;
 
     for (const file of fileList) {
-
       const size = file.size
       const filename = file.name
       const contentType = file.type
 
       const content = await fileToBase64(file)
       form.attachments.push({content, filename, size, contentType})
-
     }
-
   }
 }
 
 async function sendEmail() {
-
   if (form.receiveEmail.length === 0) {
     ElMessage({
       message: t('emptyRecipientMsg'),
@@ -385,7 +415,6 @@ async function sendEmail() {
   })
 
   sending = true
-
   show.value = false
 
   emailSend(form, (e) => {
@@ -404,7 +433,6 @@ async function sendEmail() {
     })
 
     userStore.refreshUserInfo();
-
     addRecipientRecord();
 
     if (form.draftId) {
@@ -451,6 +479,8 @@ function resetForm() {
   form.bcc = []
   showCc.value = false
   showBcc.value = false
+  showSignature.value = false
+  signatureDraft.value = ''
   form.subject = ''
   form.content = ''
   form.manyType = null
@@ -497,12 +527,10 @@ function openForward(email) {
       backReply.receiveEmail = form.receiveEmail
       backReply.sendType = form.sendType
     })
-
   });
 }
 
 function openReply(email) {
-
   resetForm();
 
   email.subject = email.subject || ''
@@ -586,7 +614,6 @@ onUnmounted(() => {
 });
 
 function close() {
-
   if (selectStatus) openSelect();
 
   if (!form.content) {
@@ -724,7 +751,6 @@ function close() {
         overflow: hidden;
       }
 
-
       div {
         display: flex;
         align-items: center;
@@ -741,8 +767,8 @@ function close() {
       }
 
       .recipient-options { display: flex; gap: 2px; margin-top: -10px; }
-    .extra-recipient { width: 100%; }
-    .button-item {
+      .extra-recipient { width: 100%; }
+      .button-item {
         display: grid;
         grid-template-columns: auto auto 1fr auto;
 
@@ -786,7 +812,6 @@ function close() {
       }
     }
   }
-
 }
 
 .email-row {
@@ -802,6 +827,20 @@ function close() {
     margin-right: 20px !important;
     margin-left: 20px !important;
   }
+}
+
+:deep(.signature-dialog) {
+  width: 560px !important;
+  max-width: calc(100% - 40px) !important;
+
+  @media (max-width: 600px) {
+    width: calc(100% - 40px) !important;
+  }
+}
+
+.signature-label {
+  margin-bottom: 10px;
+  color: var(--el-text-color-regular);
 }
 
 .contacts-bottom {
