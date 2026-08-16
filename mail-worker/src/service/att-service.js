@@ -150,24 +150,52 @@ const attService = {
 
 		const attDataList = [];
 
-		for (let att of attList) {
-			att.buff = fileUtils.base64ToUint8Array(att.content);
-			att.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(att.buff) + fileUtils.getExtFileName(att.filename);
+		for (const item of attList || []) {
+			let buff = null;
+			const content = item.content;
+
+			if (content instanceof ArrayBuffer) {
+				buff = new Uint8Array(content);
+			} else if (content instanceof Uint8Array) {
+				buff = content;
+			} else if (ArrayBuffer.isView(content)) {
+				buff = new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
+			} else if (content && typeof content.arrayBuffer === 'function') {
+				buff = new Uint8Array(await content.arrayBuffer());
+			} else if (typeof content === 'string') {
+				const base64 = content.includes(',') && content.startsWith('data:')
+					? content.split(',')[1]
+					: content;
+				buff = fileUtils.base64ToUint8Array(base64.replace(/\s+/g, ''));
+			}
+
+			if (!buff || buff.byteLength === 0) {
+				continue;
+			}
+
+			item.buff = buff;
+			item.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(buff) + fileUtils.getExtFileName(item.filename);
+
 			const attData = { userId, accountId, emailId };
-			attData.key = att.key;
-			attData.size = att.buff.length;
-			attData.filename = att.filename;
-			attData.mimeType = att.type;
+			attData.key = item.key;
+			attData.size = buff.byteLength;
+			attData.filename = item.filename;
+			attData.mimeType = item.mimeType || item.contentType || item.type || 'application/octet-stream';
 			attData.type = attConst.type.ATT;
 			attDataList.push(attData);
 		}
 
+		if (!attDataList.length) {
+			return;
+		}
+
 		await orm(c).insert(att).values(attDataList).run();
 
-		for (let att of attList) {
-			await r2Service.putObj(c, att.key, att.buff, {
-				contentType: att.type,
-				contentDisposition: `attachment;filename=${att.filename}`
+		for (const item of attList || []) {
+			if (!item.key || !item.buff) continue;
+			await r2Service.putObj(c, item.key, item.buff, {
+				contentType: item.mimeType || item.contentType || item.type || 'application/octet-stream',
+				contentDisposition: `attachment;filename=${item.filename}`
 			});
 		}
 
@@ -229,10 +257,10 @@ const attService = {
 									 HAVING COUNT (*) = 1) t
 									ON a.key = t.key
 						WHERE a.${fieldName} = ?;`
-					).bind(value)
+				).bind(value)
 			)
 
-			sqlList.push(c.env.db.prepare(`DELETE FROM attachments WHERE ${fieldName} = ?`).bind(value))
+		sqlList.push(c.env.db.prepare(`DELETE FROM attachments WHERE ${fieldName} = ?`).bind(value))
 
 		});
 
