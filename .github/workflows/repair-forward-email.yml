@@ -1,0 +1,83 @@
+name: Repair forward email
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ github.event.head_commit.message != 'fix: repair forward email body and attachments' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply repair
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f'Expected block not found in {path}')
+              p.write_text(s.replace(old, new, 1))
+
+          # 1) Forwarded attachments were stored as ArrayBuffer, but the old
+          # saveSendAtt() always passed them to atob(). This is the direct
+          # cause of: atob() called with invalid base64-encoded data.
+          replace_once(
+              'mail-worker/src/service/att-service.js',
+              '''\tasync saveSendAtt(c, attList, userId, accountId, emailId) {\n\n\t\tconst attDataList = [];\n\n\t\tfor (let att of attList) {\n\t\t\tatt.buff = fileUtils.base64ToUint8Array(att.content);\n\t\t\tatt.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(att.buff) + fileUtils.getExtFileName(att.filename);\n\t\t\tconst attData = { userId, accountId, emailId };\n\t\t\tattData.key = att.key;\n\t\t\tattData.size = att.buff.length;\n\t\t\tattData.filename = att.filename;\n\t\t\tattData.mimeType = att.type;\n\t\t\tattData.type = attConst.type.ATT;\n\t\t\tattDataList.push(attData);\n\t\t}\n\n\t\tawait orm(c).insert(att).values(attDataList).run();\n\n\t\tfor (let att of attList) {\n\t\t\tawait r2Service.putObj(c, att.key, att.buff, {\n\t\t\t\tcontentType: att.type,\n\t\t\t\tcontentDisposition: `attachment;filename=${att.filename}`\n\t\t\t});\n\t\t}\n\n\t},''',
+              '''\tasync saveSendAtt(c, attList, userId, accountId, emailId) {\n\n\t\tconst attDataList = [];\n\n\t\tfor (let att of attList) {\n\t\t\tlet content = att.content;\n\n\t\t\tif (!content) {\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tif (typeof content === 'string') {\n\t\t\t\tif (content.startsWith('data:')) {\n\t\t\t\t\tcontent = content.split(',')[1] || content;\n\t\t\t\t}\n\t\t\t\tatt.buff = fileUtils.base64ToUint8Array(content.replace(/\\s+/g, ''));\n\t\t\t} else if (content instanceof ArrayBuffer) {\n\t\t\t\tatt.buff = new Uint8Array(content);\n\t\t\t} else if (content instanceof Uint8Array) {\n\t\t\t\tatt.buff = content;\n\t\t\t} else if (ArrayBuffer.isView(content)) {\n\t\t\t\tatt.buff = new Uint8Array(content.buffer, content.byteOffset, content.byteLength);\n\t\t\t} else {\n\t\t\t\tcontinue;\n\t\t\t}\n\n\t\t\tatt.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(att.buff) + fileUtils.getExtFileName(att.filename);\n\t\t\tconst attData = { userId, accountId, emailId };\n\t\t\tattData.key = att.key;\n\t\t\tattData.size = att.buff.byteLength;\n\t\t\tattData.filename = att.filename;\n\t\t\tattData.mimeType = att.mimeType || att.contentType || att.type || 'application/octet-stream';\n\t\t\tattData.type = attConst.type.ATT;\n\t\t\tattDataList.push(attData);\n\t\t}\n\n\t\tif (attDataList.length === 0) {\n\t\t\treturn;\n\t\t}\n\n\t\tawait orm(c).insert(att).values(attDataList).run();\n\n\t\tfor (let att of attList) {\n\t\t\tif (!att.key || !att.buff) continue;\n\t\t\tawait r2Service.putObj(c, att.key, att.buff, {\n\t\t\t\tcontentType: att.mimeType || att.contentType || att.type || 'application/octet-stream',\n\t\t\t\tcontentDisposition: `attachment;filename=${att.filename}`\n\t\t\t});\n\t\t}\n\n\t},'''
+          )
+
+          # 2) A malformed data:image URI in an old email must not make the
+          # whole forward/send operation fail with an atob() exception.
+          replace_once(
+              'mail-worker/src/service/att-service.js',
+              '''\t\t\tif (src && src.startsWith('data:image')) {\n\t\t\t\tconst file = fileUtils.base64ToFile(src);\n\t\t\t\tconst buff = await file.arrayBuffer();\n\t\t\t\tconst cid = uuidv4().replace(/-/g, '');\n\t\t\t\tconst key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(buff) + fileUtils.getExtFileName(file.name);\n\n\t\t\t\timg.setAttribute('src', 'cid:' + cid);\n\n\t\t\t\tconst attData = {};\n\t\t\t\tattData.key = key;\n\t\t\t\tattData.filename = file.name;\n\t\t\t\tattData.mimeType = file.type;\n\t\t\t\tattData.size = file.size;\n\t\t\t\tattData.buff = buff;\n\t\t\t\tattData.content = fileUtils.base64ToDataStr(src);\n\t\t\t\tattData.contentId = cid;\n\n\t\t\t\timageDataList.push(attData);\n\t\t\t}''',
+              '''\t\t\tif (src && src.startsWith('data:image')) {\n\t\t\t\ttry {\n\t\t\t\t\tconst file = fileUtils.base64ToFile(src);\n\t\t\t\t\tconst buff = await file.arrayBuffer();\n\t\t\t\t\tconst cid = uuidv4().replace(/-/g, '');\n\t\t\t\t\tconst key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(buff) + fileUtils.getExtFileName(file.name);\n\n\t\t\t\t\timg.setAttribute('src', 'cid:' + cid);\n\n\t\t\t\t\tconst attData = {};\n\t\t\t\t\tattData.key = key;\n\t\t\t\t\tattData.filename = file.name;\n\t\t\t\t\tattData.mimeType = file.type;\n\t\t\t\t\tattData.size = file.size;\n\t\t\t\t\tattData.buff = buff;\n\t\t\t\t\tattData.content = fileUtils.base64ToDataStr(src);\n\t\t\t\t\tattData.contentId = cid;\n\n\t\t\t\t\timageDataList.push(attData);\n\t\t\t\t} catch (e) {\n\t\t\t\t\t// Keep the original image URL/data untouched; a broken inline image\n\t\t\t\t\t// must not prevent the text portion of a forwarded email from sending.\n\t\t\t\t}\n\t\t\t}'''
+          )
+
+          # 3) Give forwarded mail a clear editable area followed by a standard
+          # forwarded-message block, instead of putting the original message at the top.
+          replace_once(
+              'mail-vue/src/layout/write/index.vue',
+              '''function openForward(email) {\n  resetForm();\n  email.subject = email.subject || ''\n  form.subject = email.subject\n  form.sendType = 'forward'\n  defValue.value = ''\n\n  setTimeout(async () => {\n    defValue.value = `\n      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}\n    `\n    form.emailId = email.emailId\n    open()\n\n    nextTick(() => {\n      backReply.content = editor.value.getContent()\n      backReply.subject = form.subject\n      backReply.receiveEmail = form.receiveEmail\n      backReply.sendType = form.sendType\n    })\n  });\n}''',
+              '''function escapeHtml(value) {\n  return String(value || '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/"/g, '&quot;')\n    .replace(/'/g, '&#39;')\n}\n\nfunction buildForwardContent(email) {\n  const originalContent = formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${escapeHtml(email.text)}</pre>`\n  const originalSubject = email.subject || ''\n  const originalFrom = `${email.name || ''} &lt;${email.sendEmail || ''}&gt;`\n  const originalTo = email.toEmail || (Array.isArray(email.recipient) ? email.recipient.map(item => item.address || item).join(', ') : '')\n  const originalCc = Array.isArray(email.cc) ? email.cc.join(', ') : (email.cc || '')\n\n  return `\n    <div><br></div>\n    <div style="border-top: 1px solid #999896; margin: 12px 0 10px;"></div>\n    <div style="font-weight: bold; margin-bottom: 8px;">---------- Forwarded message ----------</div>\n    <div><strong>From:</strong> ${originalFrom}</div>\n    <div><strong>Date:</strong> ${escapeHtml(formatDetailDate(email.createTime))}</div>\n    <div><strong>Subject:</strong> ${escapeHtml(originalSubject)}</div>\n    <div><strong>To:</strong> ${escapeHtml(originalTo)}</div>\n    ${originalCc ? `<div><strong>Cc:</strong> ${escapeHtml(originalCc)}</div>` : ''}\n    <div style="margin-top: 10px;">${originalContent}</div>\n  `\n}\n\nfunction openForward(email) {\n  resetForm();\n  email.subject = email.subject || ''\n  const subject = email.subject.startsWith('Fwd:') || email.subject.startsWith('Fwd：')\n    ? email.subject\n    : 'Fwd: ' + email.subject\n  form.subject = subject\n  form.sendType = 'forward'\n  defValue.value = ''\n\n  setTimeout(async () => {\n    defValue.value = buildForwardContent(email)\n    form.emailId = email.emailId\n    open()\n\n    nextTick(() => {\n      editor.value.focusStart?.()\n      backReply.content = editor.value.getContent()\n      backReply.subject = form.subject\n      backReply.receiveEmail = form.receiveEmail\n      backReply.sendType = form.sendType\n    })\n  });\n}'''
+          )
+
+          # 4) Put the cursor in the blank area at the top of a forwarded message.
+          replace_once(
+              'mail-vue/src/components/tiny-editor/index.vue',
+              '''defineExpose({\n  clearEditor,\n  focus,\n  getContent,\n  setContent\n})''',
+              '''defineExpose({\n  clearEditor,\n  focus,\n  focusStart,\n  getContent,\n  setContent\n})'''
+          )
+          replace_once(
+              'mail-vue/src/components/tiny-editor/index.vue',
+              '''function focus() {\n  nextTick(() => {\n    if (editor.value) editor.value.focus()\n  })\n}''',
+              '''function focus() {\n  nextTick(() => {\n    if (editor.value) editor.value.focus()\n  })\n}\n\nfunction focusStart() {\n  nextTick(() => {\n    if (editor.value) {\n      editor.value.focus()\n      editor.value.selection.setCursorLocation(editor.value.getBody(), 0)\n    }\n  })\n}'''
+          )
+
+          # 5) Make the forward attachment conversion tolerate all storage backends.
+          replace_once(
+              'mail-worker/src/service/email-service.js',
+              '''\t\t\tfor (const sourceAtt of sourceAttList) {\n\t\t\t\tconst obj = await r2Service.getObj(c, sourceAtt.key);\n\t\t\t\tif (!obj) continue;\n\t\t\t\tattachments.push({\n\t\t\t\t\tcontent: await obj.arrayBuffer(),\n\t\t\t\t\tfilename: sourceAtt.filename,\n\t\t\t\t\tsize: sourceAtt.size,\n\t\t\t\t\tcontentType: sourceAtt.mimeType,\n\t\t\t\t\ttype: sourceAtt.mimeType\n\t\t\t\t});\n\t\t\t}''',
+              '''\t\t\tfor (const sourceAtt of sourceAttList) {\n\t\t\t\tconst obj = await r2Service.getObj(c, sourceAtt.key);\n\t\t\t\tif (!obj) continue;\n\t\t\t\tconst content = obj instanceof ArrayBuffer\n\t\t\t\t\t? obj\n\t\t\t\t\t: obj instanceof Uint8Array\n\t\t\t\t\t\t? obj\n\t\t\t\t\t\t: typeof obj.arrayBuffer === 'function'\n\t\t\t\t\t\t\t? await obj.arrayBuffer()\n\t\t\t\t\t\t\t: null;\n\t\t\t\tif (!content) continue;\n\t\t\t\tattachments.push({\n\t\t\t\t\tcontent,\n\t\t\t\t\tfilename: sourceAtt.filename,\n\t\t\t\t\tsize: sourceAtt.size,\n\t\t\t\t\tcontentType: sourceAtt.mimeType,\n\t\t\t\t\tmimeType: sourceAtt.mimeType,\n\t\t\t\t\ttype: sourceAtt.mimeType\n\t\t\t\t});\n\t\t\t}'''
+          )
+
+          print('Forward repair patch applied successfully.')
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/repair-forward-email.yml
+          git add mail-worker/src/service/att-service.js mail-worker/src/service/email-service.js mail-vue/src/layout/write/index.vue mail-vue/src/components/tiny-editor/index.vue .github/workflows/repair-forward-email.yml
+          git commit -m "fix: repair forward email body and attachments"
+          git push
