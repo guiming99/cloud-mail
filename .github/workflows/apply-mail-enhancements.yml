@@ -1,0 +1,277 @@
+name: apply mail enhancements
+
+on:
+  push:
+    branches: [feature/cc-bcc-signature-forward-attachments]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply CC BCC signature and forward-attachment changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          def read(p):
+              return Path(p).read_text(encoding='utf-8')
+
+          def write(p, s):
+              Path(p).write_text(s, encoding='utf-8')
+
+          # ---------- frontend writer ----------
+          p = 'mail-vue/src/layout/write/index.vue'
+          s = read(p)
+          original = s
+
+          s = s.replace(
+              '''<Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts" />''',
+              '''<Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts" />
+                <el-button link size="small" @click.stop="showCc = !showCc">Cc</el-button>
+                <el-button link size="small" @click.stop="showBcc = !showBcc">Bcc</el-button>''', 1)
+
+          marker = '''        </el-input-tag>\n        <el-input v-model="form.subject" :placeholder="t('subject')" />'''
+          replacement = '''        </el-input-tag>
+        <el-input-tag v-if="showCc" v-model="form.cc" @add-tag="addExtraTag('cc', $event)" tag-type="primary" size="default">
+          <template #prefix><div class="item-title">Cc</div></template>
+        </el-input-tag>
+        <el-input-tag v-if="showBcc" v-model="form.bcc" @add-tag="addExtraTag('bcc', $event)" tag-type="primary" size="default">
+          <template #prefix><div class="item-title">Bcc</div></template>
+        </el-input-tag>
+        <el-input v-model="form.subject" :placeholder="t('subject')" />'''
+          assert marker in s, 'writer recipient marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          s = s.replace("const showContacts = ref(false)\n", "const showContacts = ref(false)\nconst showCc = ref(false)\nconst showBcc = ref(false)\n", 1)
+          s = s.replace("  receiveEmail: [],\n  accountId: -1,", "  receiveEmail: [],\n  cc: [],\n  bcc: [],\n  accountId: -1,", 1)
+
+          marker = '''function addTagChange(val) {\n'''
+          extra = '''function addExtraTag(type, val) {
+  const emails = Array.from(new Set(
+      String(val || '').split(/[,，]/).map(item => item.trim()).filter(item => item)
+  ));
+  const list = form[type];
+  if (list.length > 0 && list[list.length - 1] === val) list.splice(list.length - 1, 1);
+  emails.forEach(email => {
+    if (isEmail(email) && !list.includes(email)) list.push(email);
+  });
+}
+
+'''
+          assert marker in s, 'writer addTagChange marker not found'
+          s = s.replace(marker, extra + marker, 1)
+
+          s = s.replace("  form.receiveEmail = []\n  form.subject = ''", "  form.receiveEmail = []\n  form.cc = []\n  form.bcc = []\n  showCc.value = false\n  showBcc.value = false\n  form.subject = ''", 1)
+
+          # Forward existing R2 attachments into the new outgoing message.
+          marker = '''function openForward(email) {\n  resetForm();'''
+          replacement = '''async function loadForwardAttachments(attList = []) {
+  const result = [];
+  for (const att of attList) {
+    try {
+      const response = await fetch(cvtR2Url(att.key));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const file = new File([blob], att.filename || 'attachment', {
+        type: att.mimeType || att.contentType || blob.type || 'application/octet-stream'
+      });
+      const content = await fileToBase64(file);
+      result.push({
+        content,
+        filename: att.filename || 'attachment',
+        size: att.size || blob.size,
+        contentType: att.mimeType || att.contentType || blob.type || 'application/octet-stream'
+      });
+    } catch (e) {
+      console.warn('forward attachment load failed', att.filename, e);
+    }
+  }
+  return result;
+}
+
+async function openForward(email) {
+  resetForm();'''
+          assert marker in s, 'writer openForward marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          marker = '''  form.subject = email.subject\n  form.sendType = 'forward'\n\n  defValue.value = ''\n\n  setTimeout(() => {'''
+          replacement = '''  form.subject = email.subject
+  form.sendType = 'forward'
+
+  form.attachments = await loadForwardAttachments(email.attList || [])
+
+  defValue.value = ''
+
+  setTimeout(() => {'''
+          assert marker in s, 'writer forward body marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          # New mail gets the locally stored signature without touching D1/KV/R2.
+          marker = '''function open() {\n  if (!accountStore.currentAccount.email) {'''
+          replacement = '''function getSignature() {
+  return localStorage.getItem('cloudmail_signature') || '';
+}
+
+function open() {
+  if (!form.sendType && !defValue.value) {
+    const signature = getSignature();
+    if (signature) defValue.value = signature;
+  }
+  if (!accountStore.currentAccount.email) {'''
+          assert marker in s, 'writer open marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          # Draft comparison must include CC/BCC, otherwise closing a draft can lose them.
+          marker = '''    let receiveFlag = form.receiveEmail.length === 1 && form.receiveEmail[0] === backReply.receiveEmail[0]\n    if (backReply.sendType === 'forward' && form.receiveEmail.length === 0) {'''
+          replacement = '''    let receiveFlag = form.receiveEmail.length === 1 && form.receiveEmail[0] === backReply.receiveEmail[0]
+    let ccFlag = form.cc.length === 0
+    let bccFlag = form.bcc.length === 0
+    if (backReply.sendType === 'forward' && form.receiveEmail.length === 0) {'''
+          assert marker in s, 'writer draft marker not found'
+          s = s.replace(marker, replacement, 1)
+          s = s.replace("    if (subjectFlag && contentFlag && receiveFlag) {", "    if (subjectFlag && contentFlag && receiveFlag && ccFlag && bccFlag) {", 1)
+
+          write(p, s)
+          assert s != original, 'writer was not modified'
+
+          # ---------- backend email service ----------
+          p = 'mail-worker/src/service/email-service.js'
+          s = read(p)
+          original = s
+
+          marker = '''\t\t\ttext, //邮件纯文本\n\t\t\tcontent, //邮件内容\n\t\t\tsubject, //邮件标题\n\t\t\tattachments = [] //附件\n\t\t} = params;'''
+          replacement = '''\t\t\ttext, //邮件纯文本
+\t\t\tcontent, //邮件内容
+\t\t\tsubject, //邮件标题
+\t\t\tattachments = [], //附件
+\t\t\tcc = [], //抄送
+\t\t\tbcc = [] //密送
+\t\t} = params;
+
+\t\tcc = Array.isArray(cc) ? cc : [];
+\t\tbcc = Array.isArray(bcc) ? bcc : [];
+\t\tconst allRecipients = [...receiveEmail, ...cc, ...bcc];'''
+          assert marker in s, 'backend destructuring marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          s = s.replace('''\t\tconst allInternal = receiveEmail.every(email => {''', '''\t\tconst allInternal = allRecipients.every(email => {''', 1)
+          s = s.replace('''\t\t\tif (userRow.sendCount + receiveEmail.length > roleRow.sendCount) {''', '''\t\t\tif (userRow.sendCount + allRecipients.length > roleRow.sendCount) {''', 1)
+          s = s.replace('''\t\t\tawait userService.incrUserSendCount(c, receiveEmail.length, userId);''', '''\t\t\tawait userService.incrUserSendCount(c, allRecipients.length, userId);''', 1)
+          s = s.replace('''\t\t\tawait this.HandleOnSiteEmail(c, receiveEmail, emailResult, attList);''', '''\t\t\tawait this.HandleOnSiteEmail(c, allRecipients, emailResult, attList);''', 1)
+          s = s.replace('''JSON.stringify(receiveEmail.length)''', '''JSON.stringify(allRecipients.length)''', 1)
+          s = s.replace('''daySendTotal = Number(daySendTotal) + receiveEmail.length''', '''daySendTotal = Number(daySendTotal) + allRecipients.length''', 1)
+
+          marker = '''\t\t\t\t\treceiveEmail,\n\t\t\t\t\tsubject,'''
+          replacement = '''\t\t\t\t\treceiveEmail,
+\t\t\t\t\tcc,
+\t\t\t\t\tbcc,
+\t\t\t\t\tsubject,'''
+          assert marker in s, 'backend provider params marker not found'
+          s = s.replace(marker, replacement, 2)
+
+          marker = '''\t\tconst sendForm = {\n\t\t\tfrom: { email: params.accountEmail, name: params.name },\n\t\t\tto: [...params.receiveEmail],\n\t\t\tsubject: params.subject\n\t\t};'''
+          replacement = '''\t\tconst sendForm = {
+\t\t\tfrom: { email: params.accountEmail, name: params.name },
+\t\t\tto: [...params.receiveEmail],
+\t\t\tsubject: params.subject
+\t\t};
+
+\t\tif (params.cc?.length > 0) sendForm.cc = [...params.cc];
+\t\tif (params.bcc?.length > 0) sendForm.bcc = [...params.bcc];'''
+          assert marker in s, 'cloudflare sendForm marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          marker = '''\t\tconst sendForm = {\n\t\t\tfrom: `${params.name} <${params.accountEmail}>`,\n\t\t\tto: [...params.receiveEmail],\n\t\t\tsubject: params.subject,'''
+          replacement = '''\t\tconst sendForm = {
+\t\t\tfrom: `${params.name} <${params.accountEmail}>`,
+\t\t\tto: [...params.receiveEmail],
+\t\t\tsubject: params.subject,
+\t\t\t...(params.cc?.length ? { cc: [...params.cc] } : {}),
+\t\t\t...(params.bcc?.length ? { bcc: [...params.bcc] } : {}),'''
+          assert marker in s, 'resend sendForm marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          write(p, s)
+          assert s != original, 'backend was not modified'
+
+          # ---------- signature settings ----------
+          p = 'mail-vue/src/views/setting/index.vue'
+          s = read(p)
+          original = s
+
+          marker = '''    <div class="del-email" v-perm="'my:delete'">'''
+          replacement = '''    <div class="signature">
+      <div class="title">邮件签名 / Email Signature</div>
+      <el-input
+          v-model="signature"
+          type="textarea"
+          :rows="5"
+          placeholder="例如：Best regards,&#10;Gavin Gui&#10;Astra HK"
+      />
+      <div>
+        <el-button type="primary" @click="saveSignature">保存签名</el-button>
+      </div>
+    </div>
+    <div class="del-email" v-perm="'my:delete'">'''
+          assert marker in s, 'settings insertion marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          marker = '''const langSelect = ref(settingStore.lang)\n'''
+          replacement = '''const langSelect = ref(settingStore.lang)
+const signature = ref(localStorage.getItem('cloudmail_signature') || '')
+
+function saveSignature() {
+  localStorage.setItem('cloudmail_signature', signature.value || '')
+  ElMessage({
+    message: '签名已保存',
+    type: 'success',
+    plain: true,
+  })
+}
+'''
+          assert marker in s, 'settings script marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          marker = '''  .del-email {\n'''
+          replacement = '''  .signature {
+    font-size: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    margin-bottom: 40px;
+
+    .title {
+      font-size: 18px;
+      font-weight: bold;
+    }
+  }
+
+  .del-email {
+'''
+          assert marker in s, 'settings style marker not found'
+          s = s.replace(marker, replacement, 1)
+
+          write(p, s)
+          assert s != original, 'settings were not modified'
+
+          # Validate the three modified JavaScript/Vue files at least syntactically where possible.
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          subprocess.run(['git', 'status', '--short'], check=True)
+
+          # Remove this one-shot workflow after a successful patch.
+          subprocess.run(['git', 'rm', '.github/workflows/apply-mail-enhancements.yml'], check=True)
+          subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+          subprocess.run(['git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'add', 'mail-vue/src/layout/write/index.vue', 'mail-worker/src/service/email-service.js', 'mail-vue/src/views/setting/index.vue'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'feat: add cc bcc signature and forward attachments'], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD'], check=True)
+          PY
