@@ -15,7 +15,8 @@ import {useSettingStore} from '@/store/setting.js'
 defineExpose({
   clearEditor,
   focus,
-  getContent
+  getContent,
+  setContent
 })
 
 const props = defineProps({
@@ -28,7 +29,6 @@ const props = defineProps({
     default: () => `editor-${Date.now()}`
   }
 });
-
 
 const {locale} = useI18n()
 const emit = defineEmits(['change','focus']);
@@ -59,16 +59,18 @@ watch(() => [uiStore.dark, settingStore.lang], () => {
 });
 
 const language = computed(() => {
-  if (locale.value === 'zh') {
-    return 'zh_CN'
-  }
-
+  if (locale.value === 'zh') return 'zh_CN'
   return 'en'
 })
 
 function clearEditor() {
+  if (editor.value) editor.value.setContent('');
+}
+
+function setContent(content) {
   if (editor.value) {
-    editor.value.setContent('');
+    editor.value.setContent(content || '');
+    emit('change', editor.value.getContent(), editor.value.getContent({format: 'text'}));
   }
 }
 
@@ -91,8 +93,6 @@ function initEditor() {
     statusbar: false,
     height: "100%",
     auto_focus: true,
-    //relative_urls: false,  //阻止 img标签域名和网站域名相同 自动把链接转换相对路径
-    //remove_script_host: false, // 阻止删除 URL 中的域名
     forced_root_block: 'div',
     skin: `${uiStore.dark ? 'oxide-dark' : 'oxide'}`,
     content_css: `/tinymce/css/index.css,${uiStore.dark ? 'dark' : 'default'}`,
@@ -121,9 +121,7 @@ function initEditor() {
         const text = ed.getContent({format: 'text'});
         emit('change', content, text);
       });
-      ed.on('focus', () => {
-        emit('focus', focus);
-      })
+      ed.on('focus', () => emit('focus', focus))
     },
     autofocus: true,
     branding: false,
@@ -136,7 +134,6 @@ function initEditor() {
       const input = document.createElement('input');
       input.setAttribute('type', 'file');
       input.setAttribute('accept', 'image/*');
-
       input.addEventListener('change', async (e) => {
         let file = e.target.files[0];
         const reader = new FileReader();
@@ -146,12 +143,10 @@ function initEditor() {
           const base64 = reader.result.split(',')[1];
           const blobInfo = blobCache.create(id, file, base64);
           blobCache.add(blobInfo);
-
           callback(blobInfo.blobUri(), {title: file.name});
         }
         reader.readAsDataURL(file);
       });
-
       input.click();
     }
   });
@@ -159,14 +154,13 @@ function initEditor() {
 
 function focus() {
   nextTick(() => {
-    editor.value.focus()
+    if (editor.value) editor.value.focus()
   })
 }
 
 function getContent() {
-  return editor.value.getContent()
+  return editor.value ? editor.value.getContent() : ''
 }
-
 
 function destroyEditor() {
   if (editor.value) {
@@ -181,21 +175,15 @@ function destroyEditor() {
   height: 100%;
   width: 100%;
 }
-
 .loading {
   margin: auto;
 }
-
 .editor-box-loading {
   display: flex;
   align-items: center;
   justify-content: center;
 }
-
-:deep(.tox-tbtn.tox-tbtn--select.tox-tbtn--bespoke) {
-  width: 80px !important;
-}
-
+:deep(.tox-tbtn.tox-tbtn--select.tox-tbtn--bespoke) { width: 80px !important; }
 :deep(.tox.tox-tinymce.tox-fullscreen) {
   padding-right: 15px;
   padding-left: 15px;
@@ -207,23 +195,14 @@ function destroyEditor() {
     padding-bottom: 10px;
   }
 }
-
 :deep(.tox-tinymce) {
   border: none;
   border-radius: 0;
 }
-
 :deep(.tox-toolbar__group) {
   padding-left: 0 !important;
   margin: 0 !important;
 }
-
-:deep(.tox-tbtn) {
-  margin: 0 !important;
-}
-
-:deep(.tox .tox-edit-area::before) {
-  display: none;
-}
-
+:deep(.tox-tbtn) { margin: 0 !important; }
+:deep(.tox .tox-edit-area::before) { display: none; }
 </style>
