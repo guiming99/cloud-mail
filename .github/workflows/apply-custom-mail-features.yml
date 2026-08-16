@@ -1,12 +1,8 @@
 name: Apply custom mail features
-
-on:
-  push:
-    branches: [feat/cc-bcc-signature-forward-attachments]
+on: push
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -14,138 +10,47 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Patch CloudMail
-        shell: python
+      - name: Patch source files
         run: |
+          python3 <<'PY'
           from pathlib import Path
-          import re
 
-          def rw(path, fn):
+          def patch(path, replacements):
               p = Path(path)
               s = p.read_text()
-              s2 = fn(s)
-              if s2 == s:
-                  raise SystemExit(f'No change made to {path}')
-              p.write_text(s2)
+              for old, new in replacements:
+                  if old not in s:
+                      raise SystemExit(f'pattern not found in {path}: {old[:80]!r}')
+                  s = s.replace(old, new, 1)
+              p.write_text(s)
 
-          # Frontend composer: CC/BCC fields, per-account signature, and forward attachments.
-          def patch_writer(s):
-              s = s.replace(
-                  '        </el-input-tag>\n        <el-input v-model="form.subject" :placeholder="t(\'subject\')" />',
-                  '''        </el-input-tag>
-        <div class="recipient-options">
-          <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
-          <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
-        </div>
-        <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />
-        <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />
-        <el-input v-model="form.subject" :placeholder="t('subject')" />''', 1)
-              s = s.replace(
-                  "const showContacts = ref(false)\nconst mySelect = ref()",
-                  "const showContacts = ref(false)\nconst showCc = ref(false)\nconst showBcc = ref(false)\nconst mySelect = ref()", 1)
-              s = s.replace(
-                  "  receiveEmail: [],\n  accountId: -1,",
-                  "  receiveEmail: [],\n  cc: [],\n  bcc: [],\n  accountId: -1,", 1)
-              s = s.replace(
-                  "  draftId: null,\n})",
-                  "  draftId: null,\n})", 1)
-              # Signature is stored locally per sender account, avoiding any D1 schema change.
-              marker = "const selectRecipientList = ref([])"
-              insert = '''const selectRecipientList = ref([])\n\nfunction signatureKey(accountId) {\n  return `cloudmail-signature-${accountId}`\n}\n\nfunction getSignature(accountId) {\n  return localStorage.getItem(signatureKey(accountId)) || ''\n}\n\nfunction appendSignature(content, accountId) {\n  const signature = getSignature(accountId)\n  if (!signature || content.includes('data-cloudmail-signature="1"')) return content\n  return `${content || ''}<div data-cloudmail-signature="1"><br><br>${signature}</div>`\n}\n\nfunction setSignatureFromAccount() {\n  if (form.sendType === 'forward' || form.sendType === 'reply') return\n  const signature = getSignature(form.accountId)\n  if (!signature) return\n  defValue.value = signature\n}\n'''
-              s = s.replace(marker, insert, 1)
-              # Ensure signature is added at send time, not just visually.
-              s = s.replace(
-                  "  if (!form.content) {\n    form.content = editor.value.getContent();\n  }",
-                  "  if (!form.content) {\n    form.content = editor.value.getContent();\n  }\n\n  form.content = appendSignature(form.content, form.accountId);",
-                  1)
-              # Forward attachments: fetch the original R2 objects and convert to data URLs in browser.
-              old = '''  setTimeout(() => {
-    defValue.value = `
-      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
-    `
-    open()'''
-              new = '''  setTimeout(async () => {
-    defValue.value = `
-      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
-    `
-    if (email.attList?.length) {
-      for (const att of email.attList) {
-        try {
-          const response = await fetch(cvtR2Url(att.key))
-          const blob = await response.blob()
-          const reader = new FileReader()
-          const content = await new Promise(resolve => {
-            reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
-            reader.readAsDataURL(blob)
-          })
-          form.attachments.push({content, filename: att.filename, size: att.size, contentType: att.contentType || blob.type})
-        } catch (e) {
-          console.error('转发附件读取失败:', att.filename, e)
-        }
-      }
-    }
-    open()'''
-              if old not in s:
-                  raise SystemExit('forward block not found')
-              s = s.replace(old, new, 1)
-              # Reset CC/BCC visibility and values.
-              s = s.replace(
-                  "  form.receiveEmail = []\n  form.subject = ''",
-                  "  form.receiveEmail = []\n  form.cc = []\n  form.bcc = []\n  showCc.value = false\n  showBcc.value = false\n  form.subject = ''", 1)
-              # Import R2 URL converter for forwarded attachments.
-              s = s.replace(
-                  "import {toOssDomain} from \"@/utils/convert.js\";",
-                  "import {toOssDomain, cvtR2Url} from \"@/utils/convert.js\";", 1)
-              # On new compose, seed the signature after account is selected.
-              s = s.replace(
-                  "  show.value = true;\n  editor.value.focus()",
-                  "  show.value = true;\n  setSignatureFromAccount();\n  editor.value.focus()", 1)
-              # Drafts should preserve cc/bcc; old drafts remain compatible.
-              s = s.replace(
-                  ".button-item {\n        display: grid;",
-                  ".recipient-options {\n      display: flex;\n      gap: 2px;\n      margin-top: -10px;\n    }\n\n    .extra-recipient {\n      width: 100%;\n    }\n\n      .button-item {\n        display: grid;",
-                  1)
-              return s
+          patch('mail-vue/src/layout/write/index.vue', [
+              ('''        </el-input-tag>\n        <el-input v-model="form.subject" :placeholder="t('subject')" />''', '''        </el-input-tag>\n        <div class="recipient-options">\n          <el-button link size="small" @click="showCc = !showCc">抄送</el-button>\n          <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>\n        </div>\n        <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />\n        <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />\n        <el-input v-model="form.subject" :placeholder="t('subject')" />'''),
+              ('''const showContacts = ref(false)\nconst mySelect = ref()''', '''const showContacts = ref(false)\nconst showCc = ref(false)\nconst showBcc = ref(false)\nconst mySelect = ref()'''),
+              ('''  receiveEmail: [],\n  accountId: -1,''', '''  receiveEmail: [],\n  cc: [],\n  bcc: [],\n  accountId: -1,'''),
+              ('''const selectRecipientList = ref([])''', '''const selectRecipientList = ref([])\n\nfunction signatureKey(accountId) {\n  return `cloudmail-signature-${accountId}`\n}\n\nfunction getSignature(accountId) {\n  return localStorage.getItem(signatureKey(accountId)) || ''\n}\n\nfunction appendSignature(content, accountId) {\n  const signature = getSignature(accountId)\n  if (!signature || content.includes('data-cloudmail-signature="1"')) return content\n  return `${content || ''}<div data-cloudmail-signature="1"><br><br>${signature}</div>`\n}\n\nfunction setSignatureFromAccount() {\n  if (form.sendType === 'forward' || form.sendType === 'reply') return\n  const signature = getSignature(form.accountId)\n  if (signature) defValue.value = signature\n}'''),
+              ('''  if (!form.content) {\n    form.content = editor.value.getContent();\n  }\n\n  if (!form.content) {''', '''  if (!form.content) {\n    form.content = editor.value.getContent();\n  }\n\n  form.content = appendSignature(form.content, form.accountId);\n\n  if (!form.content) {'''),
+              ('''  form.receiveEmail = []\n  form.subject = ''\n  form.content = ''\n  form.manyType = null''', '''  form.receiveEmail = []\n  form.cc = []\n  form.bcc = []\n  showCc.value = false\n  showBcc.value = false\n  form.subject = ''\n  form.content = ''\n  form.manyType = null'''),
+              ('''import {toOssDomain} from "@/utils/convert.js";''', '''import {toOssDomain, cvtR2Url} from "@/utils/convert.js";'''),
+              ('''  show.value = true;\n  editor.value.focus()''', '''  show.value = true;\n  setSignatureFromAccount();\n  editor.value.focus()'''),
+              ('''  setTimeout(() => {\n    defValue.value = `\n      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}\n    `\n    open()''', '''  setTimeout(async () => {\n    defValue.value = `\n      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}\n    `\n    if (email.attList?.length) {\n      for (const att of email.attList) {\n        try {\n          const response = await fetch(cvtR2Url(att.key))\n          const blob = await response.blob()\n          const reader = new FileReader()\n          const content = await new Promise(resolve => {\n            reader.onload = () => resolve(String(reader.result).split(',')[1] || '')\n            reader.readAsDataURL(blob)\n          })\n          form.attachments.push({content, filename: att.filename, size: att.size, contentType: att.contentType || blob.type})\n        } catch (e) {\n          console.error('转发附件读取失败:', att.filename, e)\n        }\n      }\n    }\n    open()'''),
+              ('''    .button-item {\n        display: grid;''', '''    .recipient-options {\n      display: flex;\n      gap: 2px;\n      margin-top: -10px;\n    }\n\n    .extra-recipient {\n      width: 100%;\n    }\n\n    .button-item {\n        display: grid;''')
+          ])
 
-          rw('mail-vue/src/layout/write/index.vue', patch_writer)
+          patch('mail-worker/src/service/email-service.js', [
+              ('''\t\t\treceiveEmail, //收件人邮箱\n\t\t\ttext, //邮件纯文本''', '''\t\t\treceiveEmail, //收件人邮箱\n\t\t\tcc = [], //抄送\n\t\t\tbcc = [], //密送\n\t\t\ttext, //邮件纯文本'''),
+              ('''\t\t\t\t\tto: [...params.receiveEmail],\n\t\t\t\t\tsubject: params.subject''', '''\t\t\t\t\tto: [...params.receiveEmail],\n\t\t\t\t\tcc: [...(params.cc || [])],\n\t\t\t\t\tbcc: [...(params.bcc || [])],\n\t\t\t\t\tsubject: params.subject'''),
+              ('''\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tsendType,''', '''\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tcc,\n\t\t\t\t\tbcc,\n\t\t\t\t\tsendType,'''),
+              ('''\t\temailData.text = text;\n\t\t\temailData.accountId = accountId;''', '''\t\temailData.text = text;\n\t\t\temailData.cc = JSON.stringify(cc || []);\n\t\t\temailData.bcc = JSON.stringify(bcc || []);\n\t\t\temailData.accountId = accountId;'''),
+              ('''\t\t\tto: [...params.receiveEmail],\n\t\t\tsubject: params.subject,''', '''\t\t\tto: [...params.receiveEmail],\n\t\t\tcc: [...(params.cc || [])],\n\t\t\tbcc: [...(params.bcc || [])],\n\t\t\tsubject: params.subject,''')
+          ])
 
-          # Backend: accept cc/bcc and pass them to Cloudflare Email Service / Resend; persist them.
-          def patch_service(s):
-              s = s.replace(
-                  "\t\t\treceiveEmail, //收件人邮箱\n\t\t\ttext, //邮件纯文本",
-                  "\t\t\treceiveEmail, //收件人邮箱\n\t\t\tcc = [], //抄送\n\t\t\tbcc = [], //密送\n\t\t\ttext, //邮件纯文本", 1)
-              s = s.replace(
-                  "\t\t\t\t\tto: [...params.receiveEmail],\n\t\t\t\t\tsubject: params.subject",
-                  "\t\t\t\t\tto: [...params.receiveEmail],\n\t\t\t\t\tcc: [...(params.cc || [])],\n\t\t\t\t\tbcc: [...(params.bcc || [])],\n\t\t\t\t\tsubject: params.subject", 1)
-              s = s.replace(
-                  "\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tsendType,",
-                  "\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tcc,\n\t\t\t\t\tbcc,\n\t\t\t\t\tsendType,", 1)
-              s = s.replace(
-                  "\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tsendType,",
-                  "\t\t\t\t\tattachments: [...imageDataList, ...attachments],\n\t\t\t\t\tcc,\n\t\t\t\t\tbcc,\n\t\t\t\t\tsendType,", 1)
-              # Persist CC/BCC in sent mail record.
-              s = s.replace(
-                  "\t\temailData.text = text;\n\t\t\temailData.accountId = accountId;",
-                  "\t\temailData.text = text;\n\t\t\temailData.cc = JSON.stringify(cc || []);\n\t\t\temailData.bcc = JSON.stringify(bcc || []);\n\t\t\temailData.accountId = accountId;", 1)
-              # Resend supports cc/bcc in its send form.
-              s = s.replace(
-                  "\t\t\tto: [...params.receiveEmail],\n\t\t\tsubject: params.subject,",
-                  "\t\t\tto: [...params.receiveEmail],\n\t\t\tcc: [...(params.cc || [])],\n\t\t\tbcc: [...(params.bcc || [])],\n\t\t\tsubject: params.subject,", 1)
-              return s
-
-          rw('mail-worker/src/service/email-service.js', patch_service)
-
-          # Attachment forwarding requires no backend change: sent messages already retain attachment metadata,
-          # and the composer downloads those R2 objects before resending them.
-
-          # Add lightweight Chinese/English labels only where the UI uses direct strings.
-          # Remove this temporary workflow after applying the patch.
-          wf = Path('.github/workflows/apply-custom-mail-features.yml')
-          wf.unlink()
-      - name: Commit patched source
+          Path('.github/workflows/apply-custom-mail-features.yml').unlink()
+          PY
+      - name: Commit changes
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add mail-vue/src/layout/write/index.vue mail-worker/src/service/email-service.js .github/workflows/apply-custom-mail-features.yml
-          git commit -m 'feat: add CC BCC signature and forward attachments' || exit 1
-          git push origin HEAD:feat/cc-bcc-signature-forward-attachments
+          git commit -m 'feat: add CC BCC signature and forward attachments'
+          git push origin HEAD:${GITHUB_REF_NAME}
