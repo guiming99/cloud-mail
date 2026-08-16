@@ -22,6 +22,7 @@ import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
 import telegramService from './telegram-service';
+import r2Service from './r2-service';
 
 const emailService = {
 
@@ -271,6 +272,34 @@ const emailService = {
 				throw new BizError(t('notExistEmailReply'));
 			}
 
+		}
+
+		//转发邮件时，从当前账号自己的附件记录中读取原附件并重新发送
+		if (sendType === 'forward' && emailId) {
+			const sourceEmail = await orm(c).select({ emailId: email.emailId }).from(email).where(
+				and(eq(email.emailId, Number(emailId)), eq(email.userId, userId))
+			).get();
+
+			if (!sourceEmail) {
+				throw new BizError('转发邮件不存在或无权限');
+			}
+
+			const sourceAttList = await attService.selectByEmailIds(c, [Number(emailId)]);
+			if (sourceAttList.length > 10) {
+				throw new BizError(t('attLimit'));
+			}
+
+			for (const sourceAtt of sourceAttList) {
+				const obj = await r2Service.getObj(c, sourceAtt.key);
+				if (!obj) continue;
+				attachments.push({
+					content: await obj.arrayBuffer(),
+					filename: sourceAtt.filename,
+					size: sourceAtt.size,
+					contentType: sourceAtt.mimeType,
+					type: sourceAtt.mimeType
+				});
+			}
 		}
 
 		let sendResult = {};
