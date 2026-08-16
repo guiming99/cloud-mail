@@ -210,3 +210,22 @@ html[data-theme-to="light"]::view-transition-old(root) {
     from { clip-path: circle(var(--vt-end-radius, 0px) at var(--vt-x) var(--vt-y)); }
     to   { clip-path: circle(0px at var(--vt-x) var(--vt-y)); }
 }
+
+/* Cloud-mail custom compose fields: keep CC/BCC compact so the editor gets the flexible space. */
+.write-box .container {
+    grid-template-rows: auto auto auto auto auto 1fr auto !important;
+}
+
+.write-box .container .extra-recipient {
+    width: 100%;
+    min-height: 40px;
+    height: auto;
+}
+
+.write-box .container .recipient-options {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: -8px;
+    margin-bottom: -4px;
+}
