@@ -39,7 +39,7 @@
           </template>
           <template #suffix>
             <div style="display: flex;margin-right: 3px;">
-              <Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts" />
+              <Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts('receiveEmail')" />
             </div>
           </template>
         </el-input-tag>
@@ -50,8 +50,20 @@
           <el-button link size="small" @click="editSignature">签名</el-button>
         </div>
 
-        <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />
-        <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />
+        <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认">
+          <template #suffix>
+            <div style="display: flex;margin-right: 3px;">
+              <Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts('cc')" />
+            </div>
+          </template>
+        </el-input-tag>
+        <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认">
+          <template #suffix>
+            <div style="display: flex;margin-right: 3px;">
+              <Icon icon="fa7-solid:user-plus" width="20" height="20" class="add-contact" @click.stop="openContacts('bcc')" />
+            </div>
+          </template>
+        </el-input-tag>
         <el-input v-model="form.subject" :placeholder="t('subject')" />
 
         <div class="editor-wrapper">
@@ -179,6 +191,7 @@ const showBcc = ref(false)
 const showSignature = ref(false)
 const signatureDraft = ref('')
 const mySelect = ref()
+const contactTarget = ref('receiveEmail')
 let selectStatus = false
 const backReply = reactive({
   receiveEmail: [],
@@ -271,10 +284,12 @@ function saveSignature() {
 
 const contacts = computed(() => writerStore.sendRecipientRecord.map(item => ({email: item})))
 
-function openContacts() {
+function openContacts(target = 'receiveEmail') {
+  contactTarget.value = target
   showContacts.value = true
   nextTick(() => {
-    form.receiveEmail.forEach(item => {
+    const currentList = form[contactTarget.value] || []
+    currentList.forEach(item => {
       if (writerStore.sendRecipientRecord.includes(item)) {
         contactsTabRef.value.toggleRowSelection({email: item});
       }
@@ -289,20 +304,24 @@ function deleteContact() {
     type: 'warning'
   }).then(() => {
     const contactList = contactsTabRef.value.getSelectionRows().map(item => item.email);
-    form.receiveEmail = form.receiveEmail.filter(item => !contactList.includes(item));
+    const target = contactTarget.value
+    form[target] = (form[target] || []).filter(item => !contactList.includes(item));
     writerStore.sendRecipientRecord = writerStore.sendRecipientRecord.filter(item => !contactList.includes(item));
   })
 }
 
 function chooseContact() {
   const contactList = contactsTabRef.value.getSelectionRows().map(item => item.email);
+  const target = contactTarget.value
+  const currentList = form[target] || []
+
   contactList.forEach(item => {
-    if (!form.receiveEmail.includes(item)) {
-      form.receiveEmail.push(item);
+    if (!currentList.includes(item)) {
+      currentList.push(item);
     }
   })
 
-  form.receiveEmail = form.receiveEmail.filter(item => {
+  form[target] = currentList.filter(item => {
     return contactList.includes(item) || !writerStore.sendRecipientRecord.includes(item);
   });
 
@@ -489,6 +508,7 @@ function resetForm() {
   showBcc.value = false
   showSignature.value = false
   signatureDraft.value = ''
+  contactTarget.value = 'receiveEmail'
   form.subject = ''
   form.content = ''
   form.manyType = null
