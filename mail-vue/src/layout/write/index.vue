@@ -43,6 +43,12 @@
             </div>
           </template>
         </el-input-tag>
+        <div class="recipient-options">
+          <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
+          <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
+        </div>
+        <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />
+        <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />
         <el-input v-model="form.subject" :placeholder="t('subject')" />
         <tinyEditor :def-value="defValue" ref="editor" @change="change" @focus="focusChange" />
         <div class="button-item">
@@ -104,7 +110,7 @@ import {useEmailStore} from "@/store/email.js";
 import {fileToBase64, formatBytes} from "@/utils/file-utils.js";
 import {getIconByName} from "@/utils/icon-utils.js";
 import sendPercent from "@/components/send-percent/index.vue"
-import {toOssDomain} from "@/utils/convert.js";
+import {toOssDomain, cvtR2Url} from "@/utils/convert.js";
 import {formatDetailDate} from "@/utils/day.js";
 import {useSettingStore} from "@/store/setting.js";
 import {userDraftStore} from "@/store/draft.js";
@@ -137,10 +143,14 @@ let sending = false
 const defValue = ref('')
 const contactsTabRef = ref({})
 const showContacts = ref(false)
+const showCc = ref(false)
+const showBcc = ref(false)
 const mySelect = ref()
 let selectStatus = false
 const backReply = reactive({
   receiveEmail: [],
+  cc: [],
+  bcc: [],
   subject: '',
   content: '',
   sendType: ''
@@ -160,6 +170,19 @@ const form = reactive({
 })
 
 const selectRecipientList = ref([])
+
+function signatureKey(accountId) { return `cloudmail-signature-${accountId}` }
+function getSignature(accountId) { return localStorage.getItem(signatureKey(accountId)) || '' }
+function appendSignature(content, accountId) {
+  const signature = getSignature(accountId)
+  if (!signature || content.includes('data-cloudmail-signature="1"')) return content
+  return `${content || ''}<div data-cloudmail-signature="1"><br><br>${signature}</div>`
+}
+function setSignatureFromAccount() {
+  if (form.sendType === 'forward' || form.sendType === 'reply') return
+  const signature = getSignature(form.accountId)
+  if (signature) defValue.value = signature
+}
 
 const contacts = computed(() => writerStore.sendRecipientRecord.map(item => ({email: item})))
 
@@ -312,6 +335,8 @@ async function sendEmail() {
     form.content = editor.value.getContent();
   }
 
+  form.content = appendSignature(form.content, form.accountId);
+
   if (!form.content) {
     ElMessage({
       message: t('emptyContentMsg'),
@@ -410,6 +435,10 @@ function addRecipientRecord() {
 
 function resetForm() {
   form.receiveEmail = []
+  form.cc = []
+  form.bcc = []
+  showCc.value = false
+  showBcc.value = false
   form.subject = ''
   form.content = ''
   form.manyType = null
@@ -443,10 +472,24 @@ function openForward(email) {
 
   defValue.value = ''
 
-  setTimeout(() => {
+  setTimeout(async () => {
     defValue.value = `
       ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
     `
+    if (email.attList?.length) {
+      for (const att of email.attList) {
+        try {
+          const response = await fetch(cvtR2Url(att.key))
+          const blob = await response.blob()
+          const reader = new FileReader()
+          const content = await new Promise(resolve => {
+            reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+            reader.readAsDataURL(blob)
+          })
+          form.attachments.push({content, filename: att.filename, size: att.size, contentType: att.contentType || blob.type})
+        } catch (e) { console.error('转发附件读取失败:', att.filename, e) }
+      }
+    }
     open()
 
     nextTick(() => {
@@ -517,6 +560,7 @@ function open() {
     form.name = accountStore.currentAccount.name;
   }
   show.value = true;
+  setSignatureFromAccount();
   editor.value.focus()
 }
 
@@ -697,7 +741,9 @@ function close() {
       .item-title {
       }
 
-      .button-item {
+      .recipient-options { display: flex; gap: 2px; margin-top: -10px; }
+    .extra-recipient { width: 100%; }
+    .button-item {
         display: grid;
         grid-template-columns: auto auto 1fr auto;
 

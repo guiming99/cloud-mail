@@ -171,6 +171,8 @@ const emailService = {
 			sendType, //发件类型
 			emailId, //邮件id，如果是回复邮件会带
 			receiveEmail, //收件人邮箱
+			cc = [], //抄送
+			bcc = [], //密送
 			text, //邮件纯文本
 			content, //邮件内容
 			subject, //邮件标题
@@ -285,6 +287,8 @@ const emailService = {
 					text,
 					html,
 					attachments: [...imageDataList, ...attachments],
+					cc,
+					bcc,
 					sendType,
 					messageId: emailRow.messageId
 				});
@@ -430,6 +434,8 @@ const emailService = {
 		const sendForm = {
 			from: `${params.name} <${params.accountEmail}>`,
 			to: [...params.receiveEmail],
+			cc: [...(params.cc || [])],
+			bcc: [...(params.bcc || [])],
 			subject: params.subject,
 			text: params.text,
 			html: params.html,
