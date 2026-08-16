@@ -46,6 +46,7 @@
         <div class="recipient-options">
           <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
           <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
+          <el-button link size="small" @click="editSignature">签名</el-button>
         </div>
         <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />
         <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />
@@ -158,6 +159,8 @@ const backReply = reactive({
 const form = reactive({
   sendEmail: '',
   receiveEmail: [],
+  cc: [],
+  bcc: [],
   accountId: -1,
   name: '',
   subject: '',
@@ -182,6 +185,15 @@ function setSignatureFromAccount() {
   if (form.sendType === 'forward' || form.sendType === 'reply') return
   const signature = getSignature(form.accountId)
   if (signature) defValue.value = signature
+}
+
+function editSignature() {
+  const current = getSignature(form.accountId)
+  const value = window.prompt('请输入签名（换行会自动保留）：', current.replace(/<br\s*\/?>(<br\s*\/?>)?/gi, '\n'))
+  if (value === null) return
+  const html = value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>')
+  localStorage.setItem(signatureKey(form.accountId), html)
+  ElMessage({message: value ? '签名已保存' : '签名已清除', type: 'success', plain: true})
 }
 
 const contacts = computed(() => writerStore.sendRecipientRecord.map(item => ({email: item})))
@@ -476,20 +488,7 @@ function openForward(email) {
     defValue.value = `
       ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
     `
-    if (email.attList?.length) {
-      for (const att of email.attList) {
-        try {
-          const response = await fetch(cvtR2Url(att.key))
-          const blob = await response.blob()
-          const reader = new FileReader()
-          const content = await new Promise(resolve => {
-            reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
-            reader.readAsDataURL(blob)
-          })
-          form.attachments.push({content, filename: att.filename, size: att.size, contentType: att.contentType || blob.type})
-        } catch (e) { console.error('转发附件读取失败:', att.filename, e) }
-      }
-    }
+    form.emailId = email.emailId
     open()
 
     nextTick(() => {

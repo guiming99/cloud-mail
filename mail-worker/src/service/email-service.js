@@ -301,6 +301,8 @@ const emailService = {
 					text,
 					html,
 					attachments: [...imageDataList, ...attachments],
+					cc,
+					bcc,
 					sendType,
 					messageId: emailRow.messageId
 				});
@@ -327,6 +329,8 @@ const emailService = {
 		emailData.subject = subject;
 		emailData.content = html;
 		emailData.text = text;
+		emailData.cc = JSON.stringify(cc || []);
+		emailData.bcc = JSON.stringify(bcc || []);
 		emailData.accountId = accountId;
 		emailData.status = useCloudflareEmail ? emailConst.status.DELIVERED : emailConst.status.SENT;
 		emailData.type = emailConst.type.SEND;
@@ -396,6 +400,8 @@ const emailService = {
 		const sendForm = {
 			from: { email: params.accountEmail, name: params.name },
 			to: [...params.receiveEmail],
+			cc: [...(params.cc || [])],
+			bcc: [...(params.bcc || [])],
 			subject: params.subject
 		};
 
