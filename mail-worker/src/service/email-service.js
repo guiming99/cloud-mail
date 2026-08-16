@@ -408,7 +408,7 @@ const emailService = {
 
 		//如果全是站内接收方，直接写入数据库
 		if (allInternal) {
-			await this.HandleOnSiteEmail(c, receiveEmail, emailResult, attList);
+			await this.HandleOnSiteEmail(c, [...new Set([...(receiveEmail || []), ...(cc || []), ...(bcc || [])])], emailResult, attList);
 		}
 
 		const dateStr = dayjs().format('YYYY-MM-DD');
