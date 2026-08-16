@@ -1,0 +1,248 @@
+name: Fix forward attachments v2
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch forward attachments
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          # Backend: make forwarded R2/KV attachments binary-safe, allow the
+          # compose window to control which original attachments are forwarded,
+          # and prevent metadata-only UI placeholders from reaching saveSendAtt.
+          p = Path('mail-worker/src/service/email-service.js')
+          s = p.read_text()
+
+          old = """\t\t\tattachments = [] //附件
+\t\t} = params;"""
+          new = """\t\t\tattachments = [], //附件
+\t\t\tforwardAttachmentsLoaded = false
+\t\t} = params;"""
+          if old not in s:
+              raise SystemExit('email-service.js: destructuring marker not found')
+          s = s.replace(old, new, 1)
+
+          old = """\t\t//转发邮件时，从当前账号自己的附件记录中读取原附件并重新发送
+\t\tif (sendType === 'forward' && emailId) {
+\t\t\tconst sourceEmail = await orm(c).select({ emailId: email.emailId }).from(email).where(
+\t\t\t\tand(eq(email.emailId, Number(emailId)), eq(email.userId, userId))
+\t\t\t).get();
+
+\t\t\tif (!sourceEmail) {
+\t\t\t\tthrow new BizError('转发邮件不存在或无权限');
+\t\t\t}
+
+\t\t\tconst sourceAttList = await attService.selectByEmailIds(c, [Number(emailId)]);
+\t\t\tif (sourceAttList.length > 10) {
+\t\t\t\tthrow new BizError(t('attLimit'));
+\t\t\t}
+
+\t\t\tfor (const sourceAtt of sourceAttList) {
+\t\t\t\tconst obj = await r2Service.getObj(c, sourceAtt.key);
+\t\t\t\tif (!obj) continue;
+\t\t\t\tattachments.push({
+\t\t\t\t\tcontent: await obj.arrayBuffer(),
+\t\t\t\t\tfilename: sourceAtt.filename,
+\t\t\t\t\tsize: sourceAtt.size,
+\t\t\t\t\tcontentType: sourceAtt.mimeType,
+\t\t\t\t\ttype: sourceAtt.mimeType
+\t\t\t\t});
+\t\t\t}
+\t\t}"""
+          new = """\t\t//转发邮件时，从当前账号自己的附件记录中读取原附件并重新发送
+\t\tif (sendType === 'forward' && emailId) {
+\t\t\tconst forwardAttachmentKeys = forwardAttachmentsLoaded
+\t\t\t\t? attachments.filter(item => item?.forwarded && item?.key).map(item => item.key)
+\t\t\t\t: null;
+
+\t\t\t// 前端展示用的附件元数据不是实际文件内容，先移除。
+\t\t\tattachments = attachments.filter(item => !item?.forwarded);
+
+\t\t\tconst sourceEmail = await orm(c).select({ emailId: email.emailId }).from(email).where(
+\t\t\t\tand(eq(email.emailId, Number(emailId)), eq(email.userId, userId))
+\t\t\t).get();
+
+\t\t\tif (!sourceEmail) {
+\t\t\t\tthrow new BizError('转发邮件不存在或无权限');
+\t\t\t}
+
+\t\t\tlet sourceAttList = await attService.selectByEmailIds(c, [Number(emailId)]);
+\t\t\tif (forwardAttachmentKeys) {
+\t\t\t\tsourceAttList = sourceAttList.filter(item => forwardAttachmentKeys.includes(item.key));
+\t\t\t}
+
+\t\t\tif (sourceAttList.length > 10) {
+\t\t\t\tthrow new BizError(t('attLimit'));
+\t\t\t}
+
+\t\t\tfor (const sourceAtt of sourceAttList) {
+\t\t\t\tconst obj = await r2Service.getObj(c, sourceAtt.key);
+\t\t\t\tif (!obj) continue;
+\t\t\t\tattachments.push({
+\t\t\t\t\tcontent: await obj.arrayBuffer(),
+\t\t\t\t\tfilename: sourceAtt.filename,
+\t\t\t\t\tsize: sourceAtt.size,
+\t\t\t\t\tcontentType: sourceAtt.mimeType,
+\t\t\t\t\ttype: sourceAtt.mimeType
+\t\t\t\t});
+\t\t\t}
+\t\t}"""
+          if old not in s:
+              raise SystemExit('email-service.js: forward block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # Backend: saveSendAtt currently assumes every attachment is base64.
+          # Forwarded files come from R2/KV as ArrayBuffer, which caused the
+          # observed atob(invalid base64) error. Accept all supported forms.
+          p = Path('mail-worker/src/service/att-service.js')
+          s = p.read_text()
+          old = """\tasync saveSendAtt(c, attList, userId, accountId, emailId) {
+
+\t\tconst attDataList = [];
+
+\t\tfor (let att of attList) {
+\t\t\tatt.buff = fileUtils.base64ToUint8Array(att.content);
+\t\t\tatt.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(att.buff) + fileUtils.getExtFileName(att.filename);
+\t\t\tconst attData = { userId, accountId, emailId };
+\t\t\tattData.key = att.key;
+\t\t\tattData.size = att.buff.length;
+\t\t\tattData.filename = att.filename;
+\t\t\tattData.mimeType = att.type;
+\t\t\tattData.type = attConst.type.ATT;
+\t\t\tattDataList.push(attData);
+\t\t}
+
+\t\tawait orm(c).insert(att).values(attDataList).run();
+
+\t\tfor (let att of attList) {
+\t\t\tawait r2Service.putObj(c, att.key, att.buff, {
+\t\t\t\tcontentType: att.type,
+\t\t\t\tcontentDisposition: `attachment;filename=${att.filename}`
+\t\t\t});
+\t\t}
+
+\t},"""
+          new = """\tasync saveSendAtt(c, attList, userId, accountId, emailId) {
+
+\t\tconst attDataList = [];
+
+\t\tfor (let att of attList) {
+\t\t\tlet buff = att.content;
+
+\t\t\tif (buff instanceof ArrayBuffer) {
+\t\t\t\t// already binary
+\t\t\t} else if (ArrayBuffer.isView(buff)) {
+\t\t\t\tbuff = buff.buffer.slice(buff.byteOffset, buff.byteOffset + buff.byteLength);
+\t\t\t} else if (buff && typeof buff.arrayBuffer === 'function') {
+\t\t\t\tbuff = await buff.arrayBuffer();
+\t\t\t} else if (typeof buff === 'string') {
+\t\t\t\tconst base64 = buff.startsWith('data:') ? (buff.split(',')[1] || '') : buff;
+\t\t\t\tbuff = fileUtils.base64ToUint8Array(base64.replace(/\\s+/g, '')).buffer;
+\t\t\t} else {
+\t\t\t\tthrow new BizError(`附件内容格式无效: ${att.filename || 'unknown'}`);
+\t\t\t}
+
+\t\t\tatt.buff = buff;
+\t\t\tatt.key = constant.ATTACHMENT_PREFIX + await fileUtils.getBuffHash(buff) + fileUtils.getExtFileName(att.filename);
+\t\t\tconst attData = { userId, accountId, emailId };
+\t\t\tattData.key = att.key;
+\t\t\tattData.size = buff.byteLength ?? buff.length;
+\t\t\tattData.filename = att.filename;
+\t\t\tattData.mimeType = att.type || att.mimeType || att.contentType || 'application/octet-stream';
+\t\t\tattData.type = attConst.type.ATT;
+\t\t\tattDataList.push(attData);
+\t\t}
+
+\t\tif (attDataList.length > 0) {
+\t\t\tawait orm(c).insert(att).values(attDataList).run();
+\t\t}
+
+\t\tfor (let att of attList) {
+\t\t\tawait r2Service.putObj(c, att.key, att.buff, {
+\t\t\t\tcontentType: att.type || att.mimeType || att.contentType || 'application/octet-stream',
+\t\t\t\tcontentDisposition: `attachment;filename=${att.filename}`
+\t\t\t});
+\t\t}
+
+\t},"""
+          if old not in s:
+              raise SystemExit('att-service.js: saveSendAtt block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # Frontend: show the original attachments in the forward compose box.
+          p = Path('mail-vue/src/layout/write/index.vue')
+          s = p.read_text()
+
+          old = """  form.attachments = []
+  form.sendType = ''"""
+          new = """  form.attachments = []
+  form.forwardAttachmentsLoaded = false
+  form.sendType = ''"""
+          if old not in s:
+              raise SystemExit('index.vue: reset marker not found')
+          s = s.replace(old, new, 1)
+
+          old = """  attachments: [],
+  draftId: null,
+})"""
+          new = """  attachments: [],
+  forwardAttachmentsLoaded: false,
+  draftId: null,
+})"""
+          if old not in s:
+              raise SystemExit('index.vue: form marker not found')
+          s = s.replace(old, new, 1)
+
+          old = """    form.emailId = email.emailId
+    open()"""
+          new = """    form.emailId = email.emailId
+
+    // 转发时把原邮件的普通附件显示在撰写窗口中；真正的二进制内容由后端从 R2/KV 读取。
+    if (Array.isArray(email.attList)) {
+      form.attachments = email.attList
+        .filter(item => !item.contentId && item.key)
+        .map(item => ({
+          key: item.key,
+          filename: item.filename,
+          size: Number(item.size) || 0,
+          contentType: item.mimeType || item.contentType || 'application/octet-stream',
+          type: item.mimeType || item.contentType || 'application/octet-stream',
+          forwarded: true,
+        }))
+      form.forwardAttachmentsLoaded = true
+    }
+
+    open()"""
+          if old not in s:
+              raise SystemExit('index.vue: openForward marker not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # Remove this one-shot workflow after applying the patch.
+          Path('.github/workflows/fix-forward-attachments-v2.yml').unlink()
+          Path('.forward-attachments-fix-trigger').unlink(missing_ok=True)
+          PY
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: make forwarded attachments work and visible' || exit 0
+          git push origin HEAD:main
