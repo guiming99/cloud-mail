@@ -1,0 +1,6 @@
+Add route:
+{
+ path:'/contacts/:id?',
+ name:'contacts',
+ component:()=>import('@/views/contacts/detail.vue')
+}
