@@ -15,9 +15,9 @@
         </div>
       </div>
       <div class="container">
-        <el-input-tag  @add-tag="addTagChange" tag-type="primary" @input="inputChange" size="default" v-model="form.receiveEmail" >
+        <el-input-tag @add-tag="addTagChange" tag-type="primary" @input="inputChange" size="default" v-model="form.receiveEmail">
           <template #prefix>
-            <div class="item-title" >{{ $t('recipient') }}</div>
+            <div class="item-title">{{ $t('recipient') }}</div>
             <el-select
                 ref="mySelect"
                 class="write-select"
@@ -43,21 +43,27 @@
             </div>
           </template>
         </el-input-tag>
+
         <div class="recipient-options">
           <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
           <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
           <el-button link size="small" @click="editSignature">签名</el-button>
         </div>
+
         <el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认" />
         <el-input-tag v-if="showBcc" v-model="form.bcc" class="extra-recipient" placeholder="密送邮箱，回车确认" />
         <el-input v-model="form.subject" :placeholder="t('subject')" />
-        <tinyEditor :def-value="defValue" ref="editor" @change="change" @focus="focusChange" />
+
+        <div class="editor-wrapper">
+          <tinyEditor :def-value="defValue" ref="editor" @change="change" @focus="focusChange" />
+        </div>
+
         <div class="button-item">
           <div class="att-add" @click="chooseFile">
             <Icon icon="iconamoon:attachment-fill" width="24" height="24"/>
           </div>
           <div class="att-clear" @click="clearContent">
-            <Icon icon="icon-park-outline:clear-format" width="24" height="24 "/>
+            <Icon icon="icon-park-outline:clear-format" width="24" height="24" />
           </div>
           <div class="att-list">
             <div class="att-item" v-for="(item,index) in form.attachments" :key="index">
@@ -76,15 +82,16 @@
         </div>
       </div>
     </div>
+
     <el-dialog top="10vh" v-model="showContacts" @closed="clearSelectContact" :title="t('recentContacts')">
       <el-table ref="contactsTabRef" row-key="email" :data="contacts" style="height: 445px">
         <el-table-column type="selection" width="32" />
-        <el-table-column property="email" :label="t('emailAccount')" >
+        <el-table-column property="email" :label="t('emailAccount')">
           <template #default="props">
             <div class="email-row">{{ props.row.email }}</div>
           </template>
         </el-table-column>
-        <el-table-column width="55" label="" >
+        <el-table-column width="55" label="">
           <template #default>
             <div style="display: flex;">
               <Icon icon="mage:user" style="color: var(--el-text-color-primary)" width="22" height="22" color="#606266" />
@@ -121,6 +128,7 @@
     </el-dialog>
   </div>
 </template>
+
 <script setup>
 import tinyEditor from '@/components/tiny-editor/index.vue'
 import {h, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, computed} from "vue";
@@ -204,17 +212,31 @@ function signatureToText(value) {
   if (!value) return ''
   const textarea = document.createElement('textarea')
   textarea.innerHTML = value
-  return textarea.value.replace(/<br\s*\/?>(?=)/gi, '\n').replace(/<br\s*\/?>(?=)/gi, '\n')
+  return textarea.value.replace(/<br\s*\/?>/gi, '\n')
 }
-function appendSignature(content, accountId) {
+function signatureHtml(accountId) {
   const signature = getSignature(accountId)
-  if (!signature || content.includes('data-cloudmail-signature="1"')) return content
-  return `${content || ''}<div data-cloudmail-signature="1"><br><br>${signature}</div>`
+  if (!signature) return ''
+  return `<div data-cloudmail-signature="1"><br><br>${signature}</div>`
+}
+function applySignature(content, accountId) {
+  const signatureBlock = signatureHtml(accountId)
+  if (!signatureBlock) return content || ''
+  const marker = /<div data-cloudmail-signature="1">[\s\S]*?<\/div>/i
+  if (marker.test(content || '')) {
+    return (content || '').replace(marker, signatureBlock)
+  }
+  return `${content || ''}${signatureBlock}`
 }
 function setSignatureFromAccount() {
   if (form.sendType === 'forward' || form.sendType === 'reply') return
-  const signature = getSignature(form.accountId)
-  if (signature) defValue.value = signature
+  nextTick(() => {
+    if (!editor.value || !editor.value.getContent) return
+    const current = editor.value.getContent() || ''
+    const content = applySignature(current, form.accountId)
+    editor.value.setContent(content)
+    form.content = content
+  })
 }
 
 function editSignature() {
@@ -232,7 +254,19 @@ function saveSignature() {
     .replace(/\r?\n/g, '<br>')
   localStorage.setItem(signatureKey(form.accountId), html)
   showSignature.value = false
-  ElMessage({message: value ? '签名已保存' : '签名已清除', type: 'success', plain: true})
+
+  nextTick(() => {
+    if (editor.value && editor.value.getContent) {
+      const current = editor.value.getContent() || ''
+      const content = value ? applySignature(current, form.accountId) : (current || '').replace(/<div data-cloudmail-signature="1">[\s\S]*?<\/div>/i, '')
+      editor.value.setContent(content)
+      form.content = content
+    } else if (value) {
+      defValue.value = applySignature(defValue.value || '', form.accountId)
+    }
+  })
+
+  ElMessage({message: value ? '签名已保存，并已插入正文' : '签名已清除', type: 'success', plain: true})
 }
 
 const contacts = computed(() => writerStore.sendRecipientRecord.map(item => ({email: item})))
@@ -301,7 +335,6 @@ function inputChange(value) {
   if (selectStatus && selectRecipientList.value.length === 0) {
     openSelect()
   }
-
 }
 
 function addTagChange(val) {
@@ -356,20 +389,12 @@ function chooseFile() {
 
 async function sendEmail() {
   if (form.receiveEmail.length === 0) {
-    ElMessage({
-      message: t('emptyRecipientMsg'),
-      type: 'error',
-      plain: true,
-    })
+    ElMessage({message: t('emptyRecipientMsg'), type: 'error', plain: true})
     return
   }
 
   if (!form.subject) {
-    ElMessage({
-      message: t('emptySubjectMsg'),
-      type: 'error',
-      plain: true,
-    })
+    ElMessage({message: t('emptySubjectMsg'), type: 'error', plain: true})
     return
   }
 
@@ -377,32 +402,20 @@ async function sendEmail() {
     form.content = editor.value.getContent();
   }
 
-  form.content = appendSignature(form.content, form.accountId);
+  form.content = applySignature(form.content, form.accountId);
 
   if (!form.content) {
-    ElMessage({
-      message: t('emptyContentMsg'),
-      type: 'error',
-      plain: true,
-    })
+    ElMessage({message: t('emptyContentMsg'), type: 'error', plain: true})
     return
   }
 
   if (form.manyType === 'divide' && form.attachments.length > 0) {
-    ElMessage({
-      message: t('noSeparateSendMsg'),
-      type: 'error',
-      plain: true,
-    })
+    ElMessage({message: t('noSeparateSendMsg'), type: 'error', plain: true})
     return
   }
 
   if (sending) {
-    ElMessage({
-      message: t('sendingErrorMsg'),
-      type: 'error',
-      plain: true,
-    })
+    ElMessage({message: t('sendingErrorMsg'), type: 'error', plain: true})
     return
   }
 
@@ -421,9 +434,7 @@ async function sendEmail() {
     percent.value = Math.round((e.loaded * 98) / e.total)
   }).then(emailList => {
     const email = emailList[0]
-    emailList.forEach(item => {
-      emailStore.sendScroll?.addItem(item)
-    })
+    emailList.forEach(item => emailStore.sendScroll?.addItem(item))
 
     ElNotification({
       title: t('sendSuccessMsg'),
@@ -465,10 +476,7 @@ async function sendEmail() {
 }
 
 function addRecipientRecord() {
-  writerStore.sendRecipientRecord = writerStore.sendRecipientRecord.filter(
-      email => !form.receiveEmail.includes(email)
-  );
-
+  writerStore.sendRecipientRecord = writerStore.sendRecipientRecord.filter(email => !form.receiveEmail.includes(email));
   writerStore.sendRecipientRecord.unshift(...form.receiveEmail);
   writerStore.sendRecipientRecord = writerStore.sendRecipientRecord.slice(0, 500);
 }
@@ -506,12 +514,9 @@ function focusChange() {
 
 function openForward(email) {
   resetForm();
-
   email.subject = email.subject || ''
-
   form.subject = email.subject
   form.sendType = 'forward'
-
   defValue.value = ''
 
   setTimeout(async () => {
@@ -532,9 +537,7 @@ function openForward(email) {
 
 function openReply(email) {
   resetForm();
-
   email.subject = email.subject || ''
-
   form.receiveEmail.push(email.sendEmail)
   form.subject = (
       email.subject.startsWith('Re:') ||
@@ -543,7 +546,6 @@ function openReply(email) {
       email.subject.startsWith('回复:')) ? email.subject : 'Re: ' + email.subject
   form.sendType = 'reply'
   form.emailId = email.emailId
-
   defValue.value = ''
 
   setTimeout(() => {
@@ -567,7 +569,6 @@ function openReply(email) {
       backReply.sendType = form.sendType
     })
   })
-
 }
 
 function formatImage(content) {
@@ -600,25 +601,16 @@ function openDraft(draft) {
 }
 
 const handleKeyDown = (event) => {
-  if (event.key === 'Escape') {
-    close()
-  }
+  if (event.key === 'Escape') close()
 };
 
-onMounted(() => {
-  window.addEventListener('keydown', handleKeyDown);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeyDown);
-});
+onMounted(() => window.addEventListener('keydown', handleKeyDown));
+onUnmounted(() => window.removeEventListener('keydown', handleKeyDown));
 
 function close() {
   if (selectStatus) openSelect();
 
-  if (!form.content) {
-    form.content = editor.value.getContent();
-  }
+  if (!form.content) form.content = editor.value.getContent();
 
   if (form.draftId) {
     draftStore.setDraft = {...toRaw(form)}
@@ -637,9 +629,7 @@ function close() {
     let subjectFlag = form.subject === backReply.subject
     let contentFlag = editor.value.getContent() === backReply.content
     let receiveFlag = form.receiveEmail.length === 1 && form.receiveEmail[0] === backReply.receiveEmail[0]
-    if (backReply.sendType === 'forward' && form.receiveEmail.length === 0) {
-      receiveFlag = true;
-    }
+    if (backReply.sendType === 'forward' && form.receiveEmail.length === 0) receiveFlag = true;
     if (subjectFlag && contentFlag && receiveFlag) {
       resetForm();
       close()
@@ -661,31 +651,22 @@ function close() {
     db.value.att.add({draftId, attachments: toRaw(form.attachments)})
     draftStore.refreshList++
     show.value = false
-    await nextTick(() => {
-      resetForm()
-    })
+    await nextTick(() => resetForm())
   }).catch((action) => {
     if (action === 'cancel') {
       show.value = false
       resetForm()
     }
   })
-
 }
-
 </script>
-<style>
-.write-select .el-select-dropdown__list {
-  padding: 4px 4px !important;
-}
-.write-select .el-select-dropdown__item {
-  padding: 0 10px 0 10px;
-}
 
-.write-select .el-select-dropdown {
-  min-width: 0 !important;
-}
+<style>
+.write-select .el-select-dropdown__list { padding: 4px 4px !important; }
+.write-select .el-select-dropdown__item { padding: 0 10px 0 10px; }
+.write-select .el-select-dropdown { min-width: 0 !important; }
 </style>
+
 <style scoped lang="scss">
 .send {
   position: fixed;
@@ -715,7 +696,6 @@ function close() {
       border: 0;
       padding-top: 10px;
     }
-
     @media (min-width: 1025px) {
       height: min(800px, calc(100vh - 60px));
     }
@@ -724,25 +704,13 @@ function close() {
       display: flex;
       justify-content: space-between;
       margin-bottom: 10px;
-
       .title-left {
         align-items: center;
         display: grid;
         grid-template-columns: auto auto auto 1fr;
       }
-
-      .title-text {
-      }
-
-      .sender {
-        margin-left: 8px;
-      }
-
-      .sender-name {
-        margin-left: 8px;
-        font-weight: bold;
-      }
-
+      .sender { margin-left: 8px; }
+      .sender-name { margin-left: 8px; font-weight: bold; }
       .send-email {
         color: #999896;
         margin-left: 5px;
@@ -750,49 +718,56 @@ function close() {
         text-overflow: ellipsis;
         overflow: hidden;
       }
-
-      div {
-        display: flex;
-        align-items: center;
-      }
+      div { display: flex; align-items: center; }
     }
 
     .container {
       height: 100%;
-      display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
       gap: 15px;
 
-      .item-title {
+      .item-title { }
+      .recipient-options {
+        display: flex;
+        gap: 2px;
+        margin-top: -10px;
+        flex: 0 0 auto;
       }
-
-      .recipient-options { display: flex; gap: 2px; margin-top: -10px; }
-      .extra-recipient { width: 100%; }
+      .extra-recipient {
+        width: 100%;
+        flex: 0 0 auto;
+      }
+      .editor-wrapper {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .editor-wrapper :deep(.editor-box),
+      .editor-wrapper :deep(.tox-tinymce) {
+        height: 100% !important;
+      }
       .button-item {
+        flex: 0 0 auto;
+        min-height: 32px;
         display: grid;
         grid-template-columns: auto auto 1fr auto;
+        align-items: center;
 
-        .att-add {
-          cursor: pointer;
-        }
-
-        .att-clear {
-          cursor: pointer;
-          margin-left: 10px;
-        }
-
+        .att-add { cursor: pointer; }
+        .att-clear { cursor: pointer; margin-left: 10px; }
         .att-list {
           display: grid;
           gap: 5px;
           grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
           padding-left: 10px;
           padding-right: 10px;
-          max-height: 110px;
+          max-height: 70px;
           overflow-y: auto;
           @media (max-width: 450px) {
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
           }
-
           .att-item {
             display: grid;
             grid-template-columns: auto 1fr auto auto;
@@ -832,7 +807,6 @@ function close() {
 :deep(.signature-dialog) {
   width: 560px !important;
   max-width: calc(100% - 40px) !important;
-
   @media (max-width: 600px) {
     width: calc(100% - 40px) !important;
   }
@@ -849,9 +823,7 @@ function close() {
   margin-top: 10px;
 }
 
-.add-contact {
-  color: var(--regular-text-color)
-}
+.add-contact { color: var(--regular-text-color) }
 
 .write-select {
   position: absolute;
@@ -862,11 +834,6 @@ function close() {
   pointer-events: none;
 }
 
-:deep(.el-input-tag__suffix) {
-  padding-right: 4px;
-}
-
-.icon {
-  cursor: pointer;
-}
+:deep(.el-input-tag__suffix) { padding-right: 4px; }
+.icon { cursor: pointer; }
 </style>
