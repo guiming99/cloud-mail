@@ -1,156 +1,92 @@
 <template>
-  <emailScroll ref="scroll"
-               :cancel-success="cancelStar"
-               :star-success="addStar"
-               :getEmailList="getEmailList"
-               :emailDelete="emailDelete"
-               :star-add="starAdd"
-               :star-cancel="starCancel"
-               :time-sort="params.timeSort"
-               :email-read="emailRead"
-               :show-unread="true"
-               actionLeft="4px"
-               @jump="jumpContent"
-  >
-    <template #first>
-      <Icon class="icon" @click="changeTimeSort" icon="material-symbols-light:timer-arrow-down-outline"
-            v-if="params.timeSort === 0" width="28" height="28"/>
-      <Icon class="icon" @click="changeTimeSort" icon="material-symbols-light:timer-arrow-up-outline" v-else
-            width="28" height="28"/>
-    </template>
-
-  </emailScroll>
+  <div class="conversation-page">
+    <div class="header-actions">
+      <div class="header-left">
+        <span class="count">{{ threads.length }} 个会话</span>
+        <Icon class="icon" icon="ion:reload" width="18" height="18" @click="load" />
+      </div>
+      <div class="header-right">
+        <Icon class="icon" @click="changeSort" :icon="timeSort ? 'material-symbols-light:timer-arrow-up-outline' : 'material-symbols-light:timer-arrow-down-outline'" width="26" height="26" />
+      </div>
+    </div>
+    <div v-loading="loading" class="thread-list">
+      <div v-for="item in sortedThreads" :key="item.threadId" class="thread-row" :class="{ unread: item.unreadCount > 0 }" @click="openThread(item)">
+        <div class="avatar">{{ avatarText(item.latestSender) }}</div>
+        <div class="thread-main">
+          <div class="thread-top">
+            <span class="sender">{{ item.latestSender || 'Unknown' }}</span>
+            <span class="time">{{ formatDetailDate(item.latestTime) }}</span>
+          </div>
+          <div class="subject-line">
+            <span class="subject">{{ item.subject || '(无主题)' }}</span>
+            <span v-if="item.count > 1" class="count-badge">{{ item.count }}</span>
+          </div>
+          <div class="preview">{{ item.latestEmail?.text || '' }}</div>
+        </div>
+      </div>
+      <el-empty v-if="!loading && sortedThreads.length === 0" description="暂无邮件" />
+    </div>
+  </div>
 </template>
 
 <script setup>
-import {useAccountStore} from "@/store/account.js";
-import {useEmailStore} from "@/store/email.js";
-import {useSettingStore} from "@/store/setting.js";
-import emailScroll from "@/components/email-scroll/index.vue"
-import {emailList, emailDelete, emailLatest, emailRead} from "@/request/email.js";
-import {starAdd, starCancel} from "@/request/star.js";
-import {defineOptions, h, onMounted, reactive, ref, watch} from "vue";
-import {sleep} from "@/utils/time-utils.js";
-import router from "@/router/index.js";
-import {Icon} from "@iconify/vue";
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue';
+import { Icon } from '@iconify/vue';
+import router from '@/router/index.js';
+import { useAccountStore } from '@/store/account.js';
+import { conversationList } from '@/request/conversation.js';
+import { formatDetailDate } from '@/utils/day.js';
 
-defineOptions({
-  name: 'email'
-})
-
-const route = useRoute();
-const emailStore = useEmailStore();
 const accountStore = useAccountStore();
-const settingStore = useSettingStore();
-const scroll = ref({})
-const params = reactive({
-  timeSort: 0,
-})
+const threads = ref([]);
+const loading = ref(false);
+const timeSort = ref(0);
 
-onMounted(() => {
-  emailStore.emailScroll = scroll;
-  latest()
-})
+const sortedThreads = computed(() => {
+  const list = [...threads.value];
+  return timeSort.value ? list.reverse() : list;
+});
 
-
-watch(() => accountStore.currentAccountId, () => {
-  scroll.value.refreshList();
-})
-
-function changeTimeSort() {
-  params.timeSort = params.timeSort ? 0 : 1
-  scroll.value.refreshList();
+function avatarText(value = '') {
+  const text = String(value).trim();
+  return text ? text[0].toUpperCase() : '?';
 }
 
-function jumpContent(email) {
-  emailStore.contentData.email = email
-  emailStore.contentData.delType = 'logic'
-  emailStore.contentData.showUnread = true
-  emailStore.contentData.showStar = true
-  emailStore.contentData.showReply = true
-  router.push('/mail')
-}
-
-const existIds = new Set();
-
-async function latest() {
-  while (true) {
-
-    let autoRefresh = settingStore.settings.autoRefresh;
-    await sleep(autoRefresh > 1 ? autoRefresh * 1000 : 3000);
-
-    if (route.name !== 'email') {
-      continue;
-    }
-
-    const latestId = scroll.value.latestEmail?.emailId
-
-    if (!scroll.value.firstLoad && autoRefresh > 1) {
-      try {
-        const accountId = accountStore.currentAccountId
-        const allReceive = scroll.value.latestEmail?.allReceive
-        const curTimeSort = params.timeSort
-        let list = []
-
-        //确保发起请求时最后一个邮件是当前账号的,或者
-        if (accountId === scroll.value.latestEmail?.reqAccountId) {
-          list = await emailLatest(latestId, accountId, allReceive);
-        }
-
-        //确保请求回来后，账号没有切换，时间排序没有改变，全部邮件类型没变
-        if (accountId === accountStore.currentAccountId && params.timeSort === curTimeSort && allReceive === accountStore.currentAccount.allReceive) {
-          if (list.length > 0) {
-
-            for (let email of list) {
-
-              email.reqAccountId = accountId;
-              email.allReceive = allReceive;
-
-              if (!existIds.has(email.emailId)) {
-
-                existIds.add(email.emailId)
-                scroll.value.addItem(email)
-
-                await sleep(50)
-              }
-
-            }
-
-          }
-
-        }
-      } catch (e) {
-        if (e.code === 401 || e.code === 403) {
-          settingStore.settings.autoRefresh = 0;
-        }
-        console.error(e)
-      }
-    }
+async function load() {
+  if (!accountStore.currentAccountId) return;
+  loading.value = true;
+  try {
+    const data = await conversationList(accountStore.currentAccountId);
+    threads.value = data.list || [];
+  } finally {
+    loading.value = false;
   }
 }
 
-function addStar(email) {
-  emailStore.starScroll?.addItem(email)
-}
-
-function cancelStar(email) {
-  emailStore.starScroll?.deleteEmail([email.emailId])
-}
-
-function getEmailList(emailId, size) {
-  const accountId =  accountStore.currentAccountId;
-  const allReceive = accountStore.currentAccount.allReceive;
-  return emailList(accountId, allReceive, emailId, params.timeSort, size, 0).then(data => {
-    data.latestEmail.reqAccountId = accountId;
-    data.latestEmail.allReceive = allReceive;
-    return data;
-  })
-}
-
+function changeSort() { timeSort.value = timeSort.value ? 0 : 1; }
+function openThread(item) { router.push({ name: 'conversation', query: { threadId: item.threadId } }); }
+watch(() => accountStore.currentAccountId, load);
+onMounted(load);
 </script>
-<style>
-.icon {
-  cursor: pointer;
-}
+
+<style scoped lang="scss">
+.conversation-page { height:100%; overflow:hidden; display:flex; flex-direction:column; }
+.header-actions { height:44px; flex:0 0 44px; display:flex; align-items:center; justify-content:space-between; padding:0 14px; border-bottom:1px solid var(--light-border-color); }
+.header-left,.header-right { display:flex; align-items:center; gap:16px; }
+.count { font-weight:600; }
+.icon { cursor:pointer; }
+.thread-list { flex:1; overflow:auto; }
+.thread-row { display:flex; gap:12px; padding:13px 18px; border-bottom:1px solid var(--light-border-color); cursor:pointer; transition:background .15s; }
+.thread-row:hover { background:var(--light-ill); }
+.thread-row.unread .sender,.thread-row.unread .subject { font-weight:700; }
+.avatar { flex:0 0 40px; width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--el-color-primary-light-8); color:var(--el-color-primary); font-weight:700; }
+.thread-main { min-width:0; flex:1; }
+.thread-top,.subject-line { display:flex; align-items:center; gap:8px; }
+.sender,.subject { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sender { flex:1; }
+.time { color:var(--secondary-text-color); font-size:12px; white-space:nowrap; }
+.subject-line { margin-top:4px; }
+.subject { flex:1; }
+.count-badge { flex:0 0 auto; min-width:20px; height:20px; padding:0 6px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:var(--el-color-primary-light-8); color:var(--el-color-primary); font-size:12px; }
+.preview { margin-top:4px; color:var(--secondary-text-color); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
