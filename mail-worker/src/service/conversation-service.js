@@ -28,7 +28,10 @@ function fallbackKey(row) {
 
 function buildGroups(rows) {
   const byMessageId = new Map();
-  rows.forEach(row => { if (row.messageId) byMessageId.set(row.messageId, row); });
+  rows.forEach(row => {
+    const id = row.messageId || row.resendEmailId;
+    if (id) byMessageId.set(id, row);
+  });
 
   const rootCache = new Map();
   function rootOf(row) {
@@ -40,7 +43,8 @@ function buildGroups(rows) {
       current = byMessageId.get(current.inReplyTo);
     }
     const root = current || row;
-    const key = root.messageId ? `message:${root.messageId}` : fallbackKey(root);
+    const stableId = root.messageId || root.resendEmailId;
+    const key = stableId ? `message:${stableId}` : fallbackKey(root);
     rootCache.set(row.emailId, key);
     return key;
   }
@@ -52,19 +56,15 @@ function buildGroups(rows) {
     groups.get(key).rows.push(row);
   });
 
-  // Historical sent messages may have no Message-ID. Merge those using the
-  // normalized subject + participants fallback key.
+  // Merge both protocol-linked groups and legacy groups by normalized subject
+  // + participants. This is what makes old sent mail join the customer's reply
+  // even when the old record did not persist Message-ID.
   const merged = new Map();
   for (const group of groups.values()) {
-    const first = group.rows[0];
-    const key = group.key.startsWith('fallback:') ? group.key : group.key;
-    if (group.key.startsWith('fallback:')) {
-      const old = merged.get(key);
-      if (old) old.rows.push(...group.rows);
-      else merged.set(key, group);
-    } else {
-      merged.set(key, group);
-    }
+    const mergeKey = fallbackKey(group.rows[0]);
+    const old = merged.get(mergeKey);
+    if (old) old.rows.push(...group.rows);
+    else merged.set(mergeKey, { key: mergeKey, rows: [...group.rows] });
   }
 
   return [...merged.values()].map(group => {
@@ -75,7 +75,7 @@ function buildGroups(rows) {
       threadId: String(root.emailId),
       subject: latest.subject || root.subject || '',
       count: group.rows.length,
-      unreadCount: group.rows.filter(x => x.unread === 0 && x.type === emailConst.type.RECEIVE).length,
+      unreadCount: group.rows.filter(x => x.unread === emailConst.unread.UNREAD && x.type === emailConst.type.RECEIVE).length,
       latestTime: latest.createTime,
       latestSender: latest.name || latest.sendEmail,
       latestEmail: latest,
