@@ -600,7 +600,10 @@ const emailService = {
 		const { noRecipient  } = await settingService.query(c);
 
 		//查询所有收件人账号信息
-		let accountList = await orm(c).select().from(account).where(inArray(account.email, receiveEmail)).all();
+		const normalizedReceiveEmail = receiveEmail.map(email => email.toLowerCase());
+		let accountList = await orm(c).select().from(account).where(
+			inArray(sql`${account.email} COLLATE NOCASE`, normalizedReceiveEmail)
+		).all();
 
 		//查询所有收件人权限身份
 		const userIds = accountList.map(accountRow => accountRow.userId);
@@ -619,7 +622,7 @@ const emailService = {
 			emailValues.toName = emailUtils.getName(email);
 			emailValues.emailId = null;
 
-			const accountRow = accountList.find(accountRow => accountRow.email === email);
+			const accountRow = accountList.find(accountRow => accountRow.email.toLowerCase() === email.toLowerCase());
 
 			//如果收件人存在就把邮件信息改成收件人的
 			if (accountRow) {
