@@ -86,6 +86,10 @@ const writerApi = {
     writerRef.value?.openReply?.(email)
     patchReplyForwardEditor(email, 'reply')
   },
+  openReplyAll: (email) => {
+    writerRef.value?.openReplyAll?.(email)
+    patchReplyForwardEditor(email, 'reply')
+  },
   openForward: (email) => {
     writerRef.value?.openForward?.(email)
     patchReplyForwardEditor(email, 'forward')
