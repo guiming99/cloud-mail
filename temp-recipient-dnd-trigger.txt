@@ -1,1 +1,0 @@
-temporary trigger for recipient drag-and-drop patch
