@@ -27,7 +27,7 @@
                 <a :href="cvtR2Url(att.key)" download><Icon icon="system-uicons:push-down" width="21" height="21" /></a>
               </div>
             </div>
-            <div class="message-actions"><el-button size="small" @click="reply(mail)">回复</el-button><el-button size="small" @click="forward(mail)">转发</el-button></div>
+            <div class="message-actions"><el-button size="small" @click="reply(mail)">回复</el-button><el-button size="small" @click="replyAll(mail)">回复全部</el-button><el-button size="small" @click="forward(mail)">转发</el-button></div>
           </div>
         </div>
       </div>
@@ -63,6 +63,7 @@ function recipientText(value) { try { return JSON.parse(value || '[]').map(x => 
 function formatImage(content) { return (content || '').replace(/{{domain}}/g, toOssDomain(settingStore.settings.r2Domain) + '/'); }
 function toggle(index) { collapsed.value[index] = !collapsed.value[index]; }
 function reply(mail) { uiStore.writerRef.openReply(mail); }
+function replyAll(mail) { uiStore.writerRef.openReplyAll(mail); }
 function forward(mail) { uiStore.writerRef.openForward(mail); }
 function back() { router.back(); }
 

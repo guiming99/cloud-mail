@@ -167,6 +167,7 @@ import {ElMessageBox} from "element-plus";
 defineExpose({
   open,
   openReply,
+  openReplyAll,
   openForward,
   openDraft
 })
@@ -553,6 +554,11 @@ function openForward(email) {
       backReply.sendType = form.sendType
     })
   });
+}
+
+function openReplyAll(email) {
+  openReply(email)
+  nextTick(() => setReplyMode('all'))
 }
 
 function openReply(email) {
