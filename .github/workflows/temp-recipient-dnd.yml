@@ -1,0 +1,142 @@
+name: Temporary recipient DnD patch
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch recipient drag and mobile actions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mail-vue/src/layout/write/index.vue')
+          s = p.read_text()
+          if 'recipient-drop-zone' in s:
+              raise SystemExit(0)
+          to_open = '<el-input-tag @add-tag="addTagChange" tag-type="primary" @input="inputChange" size="default" v-model="form.receiveEmail">'
+          to_new = '''<div class="recipient-drop-zone" @dragover.prevent @drop="dropRecipient('receiveEmail')">
+          <el-input-tag @add-tag="addTagChange" tag-type="primary" @input="inputChange" size="default" v-model="form.receiveEmail">
+            <template #tag="{ value }">
+              <div class="recipient-tag" draggable="true" @dragstart="startRecipientDrag($event, 'receiveEmail', value)" @dragend="endRecipientDrag">
+                <span class="recipient-tag-text">{{ value }}</span>
+                <Icon class="recipient-mobile-move" icon="material-symbols:drive-file-move-outline" width="15" height="15" @click.stop="moveRecipient('receiveEmail', 'cc', value)" />
+              </div>
+            </template>'''
+          if to_open not in s: raise SystemExit('To recipient anchor not found')
+          s = s.replace(to_open, to_new, 1)
+          marker = '        </el-input-tag>\n\n        <div class="recipient-options">'
+          replacement = '          </el-input-tag>\n        </div>\n\n        <div class="recipient-options">'
+          if marker not in s: raise SystemExit('To closing anchor not found')
+          s = s.replace(marker, replacement, 1)
+          cc_open = '<el-input-tag v-if="showCc" v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认">'
+          cc_new = '''<div v-if="showCc" class="recipient-drop-zone" @dragover.prevent @drop="dropRecipient('cc')">
+          <el-input-tag v-model="form.cc" class="extra-recipient" placeholder="抄送邮箱，回车确认">
+            <template #tag="{ value }">
+              <div class="recipient-tag" draggable="true" @dragstart="startRecipientDrag($event, 'cc', value)" @dragend="endRecipientDrag">
+                <span class="recipient-tag-text">{{ value }}</span>
+                <Icon class="recipient-mobile-move" icon="material-symbols:drive-file-move-outline" width="15" height="15" @click.stop="moveRecipient('cc', 'receiveEmail', value)" />
+              </div>
+            </template>'''
+          if cc_open not in s: raise SystemExit('CC recipient anchor not found')
+          s = s.replace(cc_open, cc_new, 1)
+          marker = '        </el-input-tag>\n        <el-input-tag v-if="showBcc"'
+          replacement = '          </el-input-tag>\n        </div>\n        <el-input-tag v-if="showBcc"'
+          if marker not in s: raise SystemExit('CC closing anchor not found')
+          s = s.replace(marker, replacement, 1)
+          anchor = 'const selectRecipientList = ref([])\n'
+          functions = '''const selectRecipientList = ref([])
+const draggingRecipient = ref(null)
+
+function startRecipientDrag(event, source, value) {
+  draggingRecipient.value = {source, value}
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', value)
+}
+
+function endRecipientDrag() {
+  draggingRecipient.value = null
+}
+
+function moveRecipient(source, target, value) {
+  if (source === target) return
+  const sourceList = form[source] || []
+  if (!sourceList.includes(value)) return
+  form[source] = sourceList.filter(item => item !== value)
+  if (!form[target].includes(value)) form[target].push(value)
+  if (target === 'cc') showCc.value = true
+}
+
+function dropRecipient(target) {
+  const drag = draggingRecipient.value
+  if (!drag) return
+  moveRecipient(drag.source, target, drag.value)
+  draggingRecipient.value = null
+}
+'''
+          if anchor not in s: raise SystemExit('script anchor not found')
+          s = s.replace(anchor, functions, 1)
+          css_anchor = '.extra-recipient {\n        width: 100%;\n        flex: 0 0 auto;\n      }'
+          css = '''.extra-recipient {
+        width: 100%;
+        flex: 0 0 auto;
+      }
+      .recipient-drop-zone {
+        width: 100%;
+        flex: 0 0 auto;
+      }
+      .recipient-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        cursor: grab;
+        max-width: 100%;
+      }
+      .recipient-tag:active { cursor: grabbing; }
+      .recipient-tag-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .recipient-mobile-move {
+        display: none;
+        flex: 0 0 auto;
+        cursor: pointer;
+      }'''
+          if css_anchor not in s: raise SystemExit('CSS anchor not found')
+          s = s.replace(css_anchor, css, 1)
+          mobile_anchor = ':deep(.el-input-tag__suffix) { padding-right: 4px; }'
+          mobile = '''@media (max-width: 767px) {
+  .recipient-mobile-move { display: inline-flex; }
+  .recipient-tag { max-width: calc(100vw - 120px); }
+}'''
+          if mobile_anchor not in s: raise SystemExit('mobile CSS anchor not found')
+          s = s.replace(mobile_anchor, mobile + '\n' + mobile_anchor, 1)
+          p.write_text(s)
+          PY
+      - name: Verify and build
+        run: |
+          cd mail-vue
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm exec vite build --mode release
+          cd ..
+          git diff --check
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mail-vue/src/layout/write/index.vue
+          git commit -m 'feat: drag recipients between to and cc'
+          git rm .github/workflows/temp-recipient-dnd.yml
+          git commit -m 'chore: remove temporary recipient patch workflow'
+          git push origin main
