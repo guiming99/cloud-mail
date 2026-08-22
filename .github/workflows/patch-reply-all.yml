@@ -1,0 +1,138 @@
+name: Add reply-all controls
+on:
+  push:
+    branches:
+      - main
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'Add reply-all controls') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch reply all
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('mail-vue/src/layout/write/index.vue')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''        <div class="recipient-options">
+          <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
+          <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
+          <el-button link size="small" @click="editSignature">签名</el-button>
+        </div>'''
+          new = '''        <div class="recipient-options">
+          <el-button v-if="form.sendType === 'reply'" link size="small" @click="setReplyMode('sender')">回复发件人</el-button>
+          <el-button v-if="form.sendType === 'reply'" link size="small" @click="setReplyMode('all')">回复全部</el-button>
+          <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
+          <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
+          <el-button link size="small" @click="editSignature">签名</el-button>
+        </div>'''
+          if old not in text:
+              raise SystemExit('recipient-options block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''const contactTarget = ref('receiveEmail')
+let selectStatus = false'''
+          new = '''const contactTarget = ref('receiveEmail')
+const replyContext = reactive({
+  sender: '',
+  allTo: [],
+  allCc: []
+})
+let selectStatus = false'''
+          if old not in text:
+              raise SystemExit('replyContext insertion point not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''function openReply(email) {'''
+          helper = r'''function parseRecipientAddresses(value) {
+  try {
+    const list = JSON.parse(value || '[]')
+    return list.map(item => typeof item === 'string' ? item : item.address).filter(Boolean)
+  } catch (e) {
+    return []
+  }
+}
+
+function currentAccountEmails() {
+  return new Set([
+    form.sendEmail,
+    userStore.user?.email,
+    accountStore.currentAccount?.email
+  ].filter(Boolean).map(email => String(email).trim().toLowerCase()))
+}
+
+function uniqueEmails(list) {
+  const seen = new Set()
+  return list.filter(email => {
+    const value = String(email || '').trim()
+    const key = value.toLowerCase()
+    if (!value || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function prepareReplyContext(email) {
+  const own = currentAccountEmails()
+  const sender = String(email.sendEmail || '').trim()
+  const originalTo = parseRecipientAddresses(email.recipient)
+  const originalCc = parseRecipientAddresses(email.cc)
+
+  const allTo = uniqueEmails([sender, ...originalTo]).filter(email => !own.has(email.toLowerCase()))
+  const toSet = new Set(allTo.map(email => email.toLowerCase()))
+  const allCc = uniqueEmails(originalCc).filter(email => !own.has(email.toLowerCase()) && !toSet.has(email.toLowerCase()))
+
+  replyContext.sender = sender
+  replyContext.allTo = allTo
+  replyContext.allCc = allCc
+}
+
+function setReplyMode(mode) {
+  if (form.sendType !== 'reply') return
+  if (mode === 'all') {
+    form.receiveEmail = [...replyContext.allTo]
+    form.cc = [...replyContext.allCc]
+    showCc.value = form.cc.length > 0
+  } else {
+    form.receiveEmail = replyContext.sender ? [replyContext.sender] : []
+    form.cc = []
+    showCc.value = false
+  }
+}
+
+function openReply(email) {'''
+          if marker not in text:
+              raise SystemExit('openReply marker not found')
+          text = text.replace(marker, helper, 1)
+
+          old = '''function openReply(email) {
+  resetForm();
+  email.subject = email.subject || ''
+  form.receiveEmail.push(email.sendEmail)'''
+          new = '''function openReply(email) {
+  resetForm();
+  email.subject = email.subject || ''
+  prepareReplyContext(email)
+  form.receiveEmail.push(email.sendEmail)'''
+          if old not in text:
+              raise SystemExit('openReply start not found')
+          text = text.replace(old, new, 1)
+
+          old = '''  backReply.receiveEmail = []
+  backReply.sendType = ''
+  editor.value.clearEditor()'''
+          new = '''  backReply.receiveEmail = []
+  backReply.sendType = ''
+  replyContext.sender = ''
+  replyContext.allTo = []
+  replyContext.allCc = []
+  editor.value.clearEditor()'''
+          if old not in text:
+              raise SystemExit('resetForm replyContext reset point not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
