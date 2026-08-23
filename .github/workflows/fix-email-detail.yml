@@ -1,0 +1,47 @@
+name: fix-email-detail
+on:
+  push:
+    branches: [fix/email-detail-body]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/email-detail-body
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Patch detail view
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mail-vue/src/views/content/index.vue')
+          s = p.read_text()
+          s = s.replace('import {emailDelete, emailRead} from "@/request/email.js";', 'import {emailDelete, emailRead, emailLatest} from "@/request/email.js";')
+          s = s.replace('const email = emailStore.contentData.email', 'const email = reactive({ ...(emailStore.contentData.email || {}) })')
+          old = '''onMounted(() => {\n  if (emailStore.contentData.showUnread && email.unread === EmailUnreadEnum.UNREAD) {'''
+          new = '''onMounted(async () => {\n  try {\n    if (email.emailId) {\n      const full = await emailLatest(email.emailId, accountStore.currentAccountId, email.allReceive ?? 0)\n      if (full && typeof full === 'object') Object.assign(email, full)\n    }\n  } catch (error) {\n    console.warn('Failed to load full email detail, using cached email:', error)\n  }\n\n  if (emailStore.contentData.showUnread && email.unread === EmailUnreadEnum.UNREAD) {'''
+          if old not in s:
+              raise SystemExit('onMounted anchor not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+      - name: Build frontend
+        run: |
+          cd mail-vue
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mail-vue/src/views/content/index.vue
+          git diff --cached --check
+          git commit -m 'fix: load full email detail before rendering' || exit 0
+          git push origin HEAD:fix/email-detail-body
