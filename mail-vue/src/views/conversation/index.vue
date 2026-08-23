@@ -29,8 +29,8 @@
             </div>
           </div>
           <div v-show="!collapsed[index]" class="message-body">
-            <ShadowHtml v-if="mail.content" :html="formatImage(mail.content)" />
-            <pre v-else>{{ mail.text }}</pre>
+            <ShadowHtml v-if="shouldShowHtmlContent(mail)" :html="formatImage(mail.content)" />
+            <pre v-else>{{ mail.text || mail.content || '' }}</pre>
             <div v-if="mail.attList?.length" class="attachments">
               <div class="att-title">附件（{{ mail.attList.length }}）</div>
               <div v-for="att in mail.attList" :key="att.attId" class="att-item">
@@ -85,6 +85,31 @@ const deletingIds = ref([]);
 function avatarText(value = '') { const s = String(value).trim(); return s ? s[0].toUpperCase() : '?'; }
 function recipientText(value) { try { return JSON.parse(value || '[]').map(x => x.address).filter(Boolean).join(', '); } catch { return ''; } }
 function formatImage(content) { return (content || '').replace(/{{domain}}/g, toOssDomain(settingStore.settings.r2Domain) + '/'); }
+function stripHtml(content) {
+  return String(content || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function shouldShowHtmlContent(mail) {
+  if (!mail?.content) return false;
+  if (!mail?.text) return true;
+
+  const htmlText = stripHtml(mail.content);
+  const text = String(mail.text).replace(/\s+/g, ' ').trim();
+  if (!htmlText) return false;
+
+  const sample = text.slice(0, Math.min(80, text.length));
+  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
+    return false;
+  }
+
+  return true;
+}
 function toggle(index) { collapsed.value[index] = !collapsed.value[index]; }
 function reply(mail) { uiStore.writerRef.openReply(mail); }
 function replyAll(mail) { uiStore.writerRef.openReplyAll(mail); }
