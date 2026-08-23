@@ -78,7 +78,7 @@ import ShadowHtml from '@/components/shadow-html/index.vue'
 import {reactive, ref, watch, onMounted, onUnmounted} from "vue";
 import {useRouter} from 'vue-router'
 import {ElMessage, ElMessageBox} from 'element-plus'
-import {emailDelete, emailRead} from "@/request/email.js";
+import {emailDelete, emailRead, emailLatest} from "@/request/email.js";
 import {Icon} from "@iconify/vue";
 import {useEmailStore} from "@/store/email.js";
 import {useAccountStore} from "@/store/account.js";
@@ -98,7 +98,7 @@ const settingStore = useSettingStore();
 const accountStore = useAccountStore();
 const emailStore = useEmailStore();
 const router = useRouter()
-const email = emailStore.contentData.email
+const email = reactive({ ...(emailStore.contentData.email || {}) })
 const showPreview = ref(false)
 const srcList = reactive([])
 
@@ -107,7 +107,15 @@ watch(() => accountStore.currentAccountId, () => {
   handleBack()
 })
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    if (email.emailId) {
+      const full = await emailLatest(email.emailId, accountStore.currentAccountId, email.allReceive ?? 0)
+      if (full && typeof full === 'object') Object.assign(email, full)
+    }
+  } catch (error) {
+    console.warn('Failed to load full email detail, using cached email:', error)
+  }
   if (emailStore.contentData.showUnread && email.unread === EmailUnreadEnum.UNREAD) {
     email.unread = EmailUnreadEnum.READ;
     emailRead([email.emailId]);
@@ -155,8 +163,6 @@ function shouldShowHtmlContent() {
   const text = String(email.text).replace(/\s+/g, ' ').trim();
   if (!htmlText) return false;
 
-  // If the HTML does not contain the beginning of the plain-text body and is
-  // substantially shorter, it is usually a signature-only/stale HTML part.
   const sample = text.slice(0, Math.min(80, text.length));
   if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
     return false;
