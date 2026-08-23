@@ -21,7 +21,7 @@
             </div>
           </div>
           <div v-show="!collapsed[index]" class="message-body">
-            <ShadowHtml v-if="shouldShowHtmlContent(mail)" :html="formatImage(mail.content)" />
+            <ShadowHtml v-if="bodyHtml(mail)" :html="formatImage(bodyHtml(mail))" />
             <pre v-else>{{ mail.text || '' }}</pre>
             <div v-if="mail.attList?.length" class="attachments">
               <div class="att-title">附件（{{ mail.attList.length }}）</div>
@@ -77,10 +77,6 @@ function replyAll(mail) { uiStore.writerRef.openReplyAll(mail); }
 function forward(mail) { uiStore.writerRef.openForward(mail); }
 function back() { router.back(); }
 
-// The normal email detail page first calls /email/latest and then uses the
-// same content/text decision logic. Conversation detail must do the same;
-// its initial grouping response contains lightweight/raw rows, not the full
-// detail representation used by the proven email detail page.
 async function hydrateMessages() {
   const messages = thread.value?.messages || [];
   await Promise.all(messages.map(async (mail) => {
@@ -93,31 +89,22 @@ async function hydrateMessages() {
   }));
 }
 
-function shouldShowHtmlContent(mail) {
-  if (!mail?.content) return false;
-  if (!mail.text) return true;
+// The conversation API can return HTML in either content or text. The text
+// field must not be forced through <pre> when it is actually an HTML body.
+// Prefer the real HTML content, otherwise render HTML-looking text with the
+// same ShadowHtml component used by the normal mail detail view.
+function bodyHtml(mail) {
+  const content = String(mail?.content || '').trim();
+  if (content) return content;
 
-  const htmlText = stripHtml(mail.content);
-  const text = String(mail.text).replace(/\s+/g, ' ').trim();
-  if (!htmlText) return false;
+  const text = String(mail?.text || '').trim();
+  if (looksLikeHtml(text)) return text;
 
-  const sample = text.slice(0, Math.min(80, text.length));
-  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
-    return false;
-  }
-
-  return true;
+  return '';
 }
 
-function stripHtml(content) {
-  return String(content || '')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
+function looksLikeHtml(value) {
+  return /<(?:!doctype|html|head|body|div|p|br|span|table|thead|tbody|tr|td|th|a|img|ul|ol|li|h[1-6]|strong|b|em|i|blockquote|pre|hr)\b[^>]*>/i.test(value);
 }
 
 async function deleteMail(mail) {
