@@ -45,6 +45,8 @@
         </el-input-tag>
 
         <div class="recipient-options">
+          <el-button v-if="form.sendType === 'reply'" link size="small" @click="setReplyMode('sender')">回复发件人</el-button>
+          <el-button v-if="form.sendType === 'reply'" link size="small" @click="setReplyMode('all')">回复全部</el-button>
           <el-button link size="small" @click="showCc = !showCc">抄送</el-button>
           <el-button link size="small" @click="showBcc = !showBcc">密送</el-button>
           <el-button link size="small" @click="editSignature">签名</el-button>
@@ -193,6 +195,7 @@ const showSignature = ref(false)
 const signatureDraft = ref('')
 const mySelect = ref()
 const contactTarget = ref('receiveEmail')
+const replyContext = reactive({ sender: '', allTo: [], allCc: [] })
 let selectStatus = false
 const backReply = reactive({
   receiveEmail: [],
@@ -418,8 +421,13 @@ async function sendEmail() {
     return
   }
 
-  if (!form.content) {
-    form.content = editor.value.getContent();
+  const editorContent = editor.value?.getContent ? editor.value.getContent() : '';
+  const editorText = editor.value?.getContent ? editor.value.getContent({format: 'text'}) : '';
+  if (editorContent) {
+    form.content = editorContent;
+  }
+  if (editorText) {
+    form.text = editorText;
   }
 
   form.content = applySignature(form.content, form.accountId);
@@ -521,6 +529,9 @@ function resetForm() {
   backReply.subject = ''
   backReply.receiveEmail = []
   backReply.sendType = ''
+  replyContext.sender = ''
+  replyContext.allTo = []
+  replyContext.allCc = []
   editor.value.clearEditor()
 }
 
@@ -533,6 +544,44 @@ function focusChange() {
   if (selectStatus) openSelect()
 }
 
+function emailContentForQuote(email) {
+  const html = formatImage(email.content || '');
+  const text = String(email.text || '').trim();
+  if (!html) return text ? `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${escapeEmailText(text)}</pre>` : '';
+  if (!text) return html;
+
+  const htmlText = normalizeEmailText(stripEmailHtml(html));
+  const normalizedText = normalizeEmailText(text);
+  const sample = normalizedText.slice(0, Math.min(80, normalizedText.length));
+
+  if (sample.length >= 20 && !htmlText.includes(sample) && normalizedText.length > htmlText.length + 20) {
+    return `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${escapeEmailText(text)}</pre>`;
+  }
+  return html;
+}
+
+function stripEmailHtml(html) {
+  return String(html || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeEmailText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function escapeEmailText(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function openForward(email) {
   resetForm();
   email.subject = email.subject || ''
@@ -542,7 +591,7 @@ function openForward(email) {
 
   setTimeout(async () => {
     defValue.value = `
-      ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
+      ${emailContentForQuote(email)}
     `
     form.emailId = email.emailId
     open()
@@ -561,9 +610,64 @@ function openReplyAll(email) {
   nextTick(() => setReplyMode('all'))
 }
 
+function parseRecipientAddresses(value) {
+  try {
+    const list = JSON.parse(value || '[]')
+    return list.map(item => typeof item === 'string' ? item : item.address).filter(Boolean)
+  } catch (e) {
+    return []
+  }
+}
+
+function currentAccountEmails() {
+  return new Set([
+    form.sendEmail,
+    userStore.user?.email,
+    accountStore.currentAccount?.email
+  ].filter(Boolean).map(email => String(email).trim().toLowerCase()))
+}
+
+function uniqueEmails(list) {
+  const seen = new Set()
+  return list.filter(email => {
+    const value = String(email || '').trim()
+    const key = value.toLowerCase()
+    if (!value || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function prepareReplyContext(email) {
+  const own = currentAccountEmails()
+  const sender = String(email.sendEmail || '').trim()
+  const originalTo = parseRecipientAddresses(email.recipient)
+  const originalCc = parseRecipientAddresses(email.cc)
+  const allTo = uniqueEmails([sender, ...originalTo]).filter(address => !own.has(address.toLowerCase()))
+  const toSet = new Set(allTo.map(address => address.toLowerCase()))
+  const allCc = uniqueEmails(originalCc).filter(address => !own.has(address.toLowerCase()) && !toSet.has(address.toLowerCase()))
+  replyContext.sender = sender
+  replyContext.allTo = allTo
+  replyContext.allCc = allCc
+}
+
+function setReplyMode(mode) {
+  if (form.sendType !== 'reply') return
+  if (mode === 'all') {
+    form.receiveEmail = [...replyContext.allTo]
+    form.cc = [...replyContext.allCc]
+    showCc.value = form.cc.length > 0
+  } else {
+    form.receiveEmail = replyContext.sender ? [replyContext.sender] : []
+    form.cc = []
+    showCc.value = false
+  }
+}
+
 function openReply(email) {
   resetForm();
   email.subject = email.subject || ''
+  prepareReplyContext(email)
   form.receiveEmail.push(email.sendEmail)
   form.subject = (
       email.subject.startsWith('Re:') ||
@@ -583,7 +687,7 @@ function openReply(email) {
     </div>
     <blockquote class="mceNonEditable" style="margin: 0 0 0 0.8ex;border-left: 1px solid rgb(204,204,204);padding-left: 1ex;">
       <articl>
-          ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
+          ${emailContentForQuote(email)}
       </article>
     </blockquote>`
     open()
