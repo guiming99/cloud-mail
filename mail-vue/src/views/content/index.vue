@@ -35,7 +35,7 @@
             <el-alert v-if="email.status === 5" :closable="false" :title="$t('delayed')" class="email-msg" type="warning" show-icon />
           </div>
           <el-scrollbar class="htm-scrollbar" :class="email.attList.length === 0 ? 'bottom-distance' : ''">
-            <ShadowHtml class="shadow-html" :html="formatImage(email.content)" v-if="email.content" />
+            <ShadowHtml class="shadow-html" :html="formatImage(email.content)" v-if="shouldShowHtmlContent()" />
             <pre v-else class="email-text" >{{email.text}}</pre>
           </el-scrollbar>
           <div class="att" v-if="email.attList.length > 0">
@@ -145,6 +145,34 @@ function formatImage(content) {
   content = content || '';
   const domain = settingStore.settings.r2Domain;
   return  content.replace(/{{domain}}/g, toOssDomain(domain) + '/');
+}
+
+function shouldShowHtmlContent() {
+  if (!email.content) return false;
+  if (!email.text) return true;
+
+  const htmlText = stripHtml(email.content);
+  const text = String(email.text).replace(/\s+/g, ' ').trim();
+  if (!htmlText) return false;
+
+  // If the HTML is only a trailing signature while the plain-text body contains
+  // substantially more content, prefer the complete plain-text body.
+  if (text.length > htmlText.length && text.endsWith(htmlText)) {
+    return false;
+  }
+
+  return true;
+}
+
+function stripHtml(content) {
+  return String(content || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function showImage(key) {
