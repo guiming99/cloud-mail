@@ -2,6 +2,8 @@ name: fix-email-detail
 on:
   push:
     branches: [fix/email-detail-body]
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
