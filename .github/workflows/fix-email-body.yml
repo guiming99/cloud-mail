@@ -1,0 +1,59 @@
+name: Fix email body send
+
+on:
+  push:
+    branches: [fix/email-body-send]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/email-body-send
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Patch send body synchronization
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mail-vue/src/layout/write/index.vue')
+          s = p.read_text()
+          old = """  if (!form.content) {\n    form.content = editor.value.getContent();\n  }\n\n  form.content = applySignature(form.content, form.accountId);"""
+          new = """  // Always read the live TinyMCE content immediately before sending.\n  // This prevents stale form.content from sending an empty/old body.\n  const liveContent = editor.value?.getContent?.() || '';\n  if (liveContent) {\n    form.content = liveContent;\n  }\n\n  form.content = applySignature(form.content, form.accountId);"""
+          if old not in s:
+              raise SystemExit('Expected send-content block was not found; aborting without changes.')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: mail-vue
+        run: pnpm build
+
+      - name: Verify diff
+        run: git diff --check
+
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mail-vue/src/layout/write/index.vue
+          git commit -m 'fix: always send current editor body' || exit 0
+          git push origin fix/email-body-send
