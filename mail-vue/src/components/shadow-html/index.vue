@@ -18,23 +18,37 @@ const container = ref(null)
 const contentBox = ref(null)
 let shadowRoot = null
 
+function cleanBodyStyle(style) {
+  return String(style || '')
+    .replace(/(?:^|;)\s*display\s*:\s*none\s*!?\s*;?/gi, ';')
+    .replace(/(?:^|;)\s*visibility\s*:\s*hidden\s*!?\s*;?/gi, ';')
+    .replace(/(?:^|;)\s*opacity\s*:\s*0\s*!?\s*;?/gi, ';')
+    .trim()
+}
+
 function sanitizeHtml(html) {
   return String(html || '')
-    // Mail HTML frequently contains head/style blocks whose rules can hide
-    // the actual message body when rendered inside the viewer.
+    // Scripts must never be executed in the mail viewer.
     .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    // Do not allow common web-mail hiding rules to hide the message body.
-    .replace(/style\s*=\s*(["'])[^"']*(display\s*:\s*none|visibility\s*:\s*hidden)[^"']*\1/gi, '')
+    // Remove executable/event-handler attributes while preserving normal mail HTML.
+    .replace(/\s+on[a-z]+\s*=\s*(["'])[^"']*\1/gi, '')
+    .replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, '')
+    // A full mail document may contain html/head/body wrappers. The viewer only
+    // needs the document content; style blocks are intentionally preserved so
+    // Gmail/Cloudflare/Outlook generated markup keeps its layout.
+    .replace(/<!doctype[^>]*>/gi, '')
+    .replace(/<\/?html[^>]*>/gi, '')
+    .replace(/<\/?head[^>]*>/gi, '')
+    .replace(/<\/?body[^>]*>/gi, '')
 }
 
 function updateContent() {
-  if (!shadowRoot) return;
+  if (!shadowRoot) return
 
-  const bodyStyleRegex = /<body[^>]*style="([^"]*)"[^>]*>/i;
-  const bodyStyleMatch = props.html.match(bodyStyleRegex);
-  const bodyStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
-  const cleanedHtml = sanitizeHtml(props.html).replace(/<\/?body[^>]*>/gi, '');
+  const bodyStyleRegex = /<body[^>]*\sstyle\s*=\s*(["'])([\s\S]*?)\1[^>]*>/i
+  const bodyStyleMatch = String(props.html || '').match(bodyStyleRegex)
+  const bodyStyle = cleanBodyStyle(bodyStyleMatch ? bodyStyleMatch[2] : '')
+  const cleanedHtml = sanitizeHtml(props.html)
 
   shadowRoot.innerHTML = `
     <style>
@@ -42,7 +56,7 @@ function updateContent() {
         all: initial;
         display: block;
         width: 100%;
-        height: 100%;
+        min-height: 40px;
         font-family: -apple-system, Inter, BlinkMacSystemFont,
                     'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         font-size: 14px;
@@ -52,8 +66,8 @@ function updateContent() {
       }
 
       h1, h2, h3, h4 {
-          font-size: 18px;
-          font-weight: 700;
+        font-size: 18px;
+        font-weight: 700;
       }
 
       p {
@@ -81,16 +95,14 @@ function updateContent() {
     <div class="shadow-content">
       ${cleanedHtml}
     </div>
-  `;
+  `
 }
 
 function autoScale() {
-  // Do not use zoom based on scrollWidth here. Email HTML often contains
-  // intentionally wide tables, and scaling the whole host can make text
-  // disappear or become unreadably small on mobile browsers.
+  // Do not use zoom based on scrollWidth. Wide email tables are common and
+  // scaling the whole host can make otherwise valid content unreadable.
   if (!shadowRoot || !contentBox.value) return
-  const hostElement = shadowRoot.host
-  hostElement.style.zoom = ''
+  shadowRoot.host.style.zoom = ''
 }
 
 onMounted(async () => {
