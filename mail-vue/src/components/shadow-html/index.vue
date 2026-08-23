@@ -5,7 +5,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
 
 const props = defineProps({
   html: {
@@ -18,22 +18,29 @@ const container = ref(null)
 const contentBox = ref(null)
 let shadowRoot = null
 
+function sanitizeHtml(html) {
+  return String(html || '')
+    // Mail HTML frequently contains head/style blocks whose rules can hide
+    // the actual message body when rendered inside the viewer.
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    // Do not allow common web-mail hiding rules to hide the message body.
+    .replace(/style\s*=\s*(["'])[^"']*(display\s*:\s*none|visibility\s*:\s*hidden)[^"']*\1/gi, '')
+}
+
 function updateContent() {
   if (!shadowRoot) return;
 
-  // 1. 提取 <body> 的 style 属性（如果存在）
   const bodyStyleRegex = /<body[^>]*style="([^"]*)"[^>]*>/i;
   const bodyStyleMatch = props.html.match(bodyStyleRegex);
   const bodyStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
+  const cleanedHtml = sanitizeHtml(props.html).replace(/<\/?body[^>]*>/gi, '');
 
-  // 2. 移除 <body> 标签（保留内容）
-  const cleanedHtml = props.html.replace(/<\/?body[^>]*>/gi, '');
-
-  // 3. 将 body 的 style 应用到 .shadow-content
   shadowRoot.innerHTML = `
     <style>
       :host {
         all: initial;
+        display: block;
         width: 100%;
         height: 100%;
         font-family: -apple-system, Inter, BlinkMacSystemFont,
@@ -60,17 +67,16 @@ function updateContent() {
 
       .shadow-content {
         background: #FFFFFF;
-        width: fit-content;
+        width: 100%;
+        min-width: 0;
         height: fit-content;
-        min-width: 100%;
-        ${bodyStyle ? bodyStyle : ''} /* 注入 body 的 style */
+        ${bodyStyle ? bodyStyle : ''}
       }
 
       img:not(table img) {
         max-width: 100%;
         height: auto !important;
       }
-
     </style>
     <div class="shadow-content">
       ${cleanedHtml}
@@ -79,32 +85,24 @@ function updateContent() {
 }
 
 function autoScale() {
+  // Do not use zoom based on scrollWidth here. Email HTML often contains
+  // intentionally wide tables, and scaling the whole host can make text
+  // disappear or become unreadably small on mobile browsers.
   if (!shadowRoot || !contentBox.value) return
-
-  const parent = contentBox.value
-  const shadowContent = shadowRoot.querySelector('.shadow-content')
-
-  if (!shadowContent) return
-
-  const parentWidth = parent.offsetWidth
-  const childWidth = shadowContent.scrollWidth
-
-  if (childWidth === 0) return
-
-  const scale = parentWidth / childWidth
-
   const hostElement = shadowRoot.host
-  hostElement.style.zoom = scale
+  hostElement.style.zoom = ''
 }
 
-onMounted(() => {
+onMounted(async () => {
   shadowRoot = container.value.attachShadow({ mode: 'open' })
   updateContent()
+  await nextTick()
   autoScale()
 })
 
-watch(() => props.html, () => {
+watch(() => props.html, async () => {
   updateContent()
+  await nextTick()
   autoScale()
 })
 </script>
@@ -112,13 +110,13 @@ watch(() => props.html, () => {
 <style scoped>
 .content-box {
   width: 100%;
-  height: 100%;
-  overflow: hidden;
+  min-height: 40px;
+  overflow: visible;
   font-family: -apple-system, Inter, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
 }
 
 .content-html {
   width: 100%;
-  height: 100%;
+  min-height: 40px;
 }
 </style>
