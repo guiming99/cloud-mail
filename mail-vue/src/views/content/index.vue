@@ -155,9 +155,10 @@ function shouldShowHtmlContent() {
   const text = String(email.text).replace(/\s+/g, ' ').trim();
   if (!htmlText) return false;
 
-  // If the HTML is only a trailing signature while the plain-text body contains
-  // substantially more content, prefer the complete plain-text body.
-  if (text.length > htmlText.length && text.endsWith(htmlText)) {
+  // If the HTML does not contain the beginning of the plain-text body and is
+  // substantially shorter, it is usually a signature-only/stale HTML part.
+  const sample = text.slice(0, Math.min(80, text.length));
+  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
     return false;
   }
 
