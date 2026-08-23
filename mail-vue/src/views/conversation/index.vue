@@ -4,15 +4,7 @@
       <Icon class="icon" icon="material-symbols-light:arrow-back-ios-new" width="20" height="20" @click="back" />
       <span class="title">{{ thread?.subject || '邮件会话' }}</span>
       <span class="message-count" v-if="thread">{{ thread.messages.length }} 封邮件</span>
-      <Icon
-        v-if="thread?.messages?.length"
-        class="delete-thread"
-        icon="material-symbols-light:delete-outline"
-        width="21"
-        height="21"
-        title="删除整个会话"
-        @click="deleteConversation"
-      />
+      <Icon v-if="thread?.messages?.length" class="delete-thread" icon="material-symbols-light:delete-outline" width="21" height="21" title="删除整个会话" @click="deleteConversation" />
     </div>
     <el-scrollbar class="scroll">
       <div class="messages" v-loading="loading">
@@ -29,8 +21,8 @@
             </div>
           </div>
           <div v-show="!collapsed[index]" class="message-body">
-            <ShadowHtml v-if="htmlContent(mail)" :html="formatImage(htmlContent(mail))" />
-            <pre v-else>{{ plainText(mail) }}</pre>
+            <ShadowHtml v-if="shouldShowHtmlContent(mail)" :html="formatImage(mail.content)" />
+            <pre v-else>{{ mail.text || '' }}</pre>
             <div v-if="mail.attList?.length" class="attachments">
               <div class="att-title">附件（{{ mail.attList.length }}）</div>
               <div v-for="att in mail.attList" :key="att.attId" class="att-item">
@@ -42,13 +34,7 @@
               <el-button size="small" @click="reply(mail)">回复</el-button>
               <el-button size="small" @click="replyAll(mail)">回复全部</el-button>
               <el-button size="small" @click="forward(mail)">转发</el-button>
-              <el-button
-                size="small"
-                type="danger"
-                plain
-                :loading="deletingIds.includes(mail.emailId)"
-                @click="deleteMail(mail)"
-              >删除</el-button>
+              <el-button size="small" type="danger" plain :loading="deletingIds.includes(mail.emailId)" @click="deleteMail(mail)">删除</el-button>
             </div>
           </div>
         </div>
@@ -65,7 +51,7 @@ import router from '@/router/index.js';
 import { useAccountStore } from '@/store/account.js';
 import { useUiStore } from '@/store/ui.js';
 import { conversationDetail } from '@/request/conversation.js';
-import { emailDelete, emailRead } from '@/request/email.js';
+import { emailDelete, emailRead, emailLatest } from '@/request/email.js';
 import ShadowHtml from '@/components/shadow-html/index.vue';
 import { formatDetailDate } from '@/utils/day.js';
 import { formatBytes } from '@/utils/file-utils.js';
@@ -91,30 +77,53 @@ function replyAll(mail) { uiStore.writerRef.openReplyAll(mail); }
 function forward(mail) { uiStore.writerRef.openForward(mail); }
 function back() { router.back(); }
 
-// Conversation records may contain either a normal HTML content field or an
-// HTML string in the text field. Prefer content, but never render HTML as raw
-// text. This keeps the conversation view independent of ShadowHtml itself.
-function htmlContent(mail) {
-  if (mail?.content) return String(mail.content);
-  const text = mail?.text == null ? '' : String(mail.text);
-  if (/<(?:div|p|br|table|tr|td|span|a|img|ul|ol|li|h[1-6]|strong|em|blockquote)\b/i.test(text)) return text;
-  return '';
+// The normal email detail page first calls /email/latest and then uses the
+// same content/text decision logic. Conversation detail must do the same;
+// its initial grouping response contains lightweight/raw rows, not the full
+// detail representation used by the proven email detail page.
+async function hydrateMessages() {
+  const messages = thread.value?.messages || [];
+  await Promise.all(messages.map(async (mail) => {
+    try {
+      const full = await emailLatest(mail.emailId, accountStore.currentAccountId, mail.allReceive ?? 0);
+      if (full && typeof full === 'object') Object.assign(mail, full);
+    } catch (error) {
+      console.warn('Failed to load conversation email detail, using conversation row:', error);
+    }
+  }));
 }
 
-function plainText(mail) {
-  return mail?.text == null ? '' : String(mail.text);
+function shouldShowHtmlContent(mail) {
+  if (!mail?.content) return false;
+  if (!mail.text) return true;
+
+  const htmlText = stripHtml(mail.content);
+  const text = String(mail.text).replace(/\s+/g, ' ').trim();
+  if (!htmlText) return false;
+
+  const sample = text.slice(0, Math.min(80, text.length));
+  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
+    return false;
+  }
+
+  return true;
+}
+
+function stripHtml(content) {
+  return String(content || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function deleteMail(mail) {
   try {
-    await ElMessageBox.confirm(
-      `确定删除这封邮件吗？${mail.subject ? `\n${mail.subject}` : ''}`,
-      '删除邮件',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
-    );
-  } catch {
-    return;
-  }
+    await ElMessageBox.confirm(`确定删除这封邮件吗？${mail.subject ? `\n${mail.subject}` : ''}`, '删除邮件', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' });
+  } catch { return; }
 
   deletingIds.value.push(mail.emailId);
   try {
@@ -123,10 +132,7 @@ async function deleteMail(mail) {
     thread.value.messages = messages.filter(item => item.emailId !== mail.emailId);
     delete collapsed.value[thread.value.messages.length];
     ElMessage({ message: '邮件已删除', type: 'success', plain: true });
-
-    if (thread.value.messages.length === 0) {
-      router.back();
-    }
+    if (thread.value.messages.length === 0) router.back();
   } catch (error) {
     ElMessage({ message: error?.message || '删除失败，请稍后重试', type: 'error', plain: true });
   } finally {
@@ -137,16 +143,9 @@ async function deleteMail(mail) {
 async function deleteConversation() {
   const messages = thread.value?.messages || [];
   if (!messages.length) return;
-
   try {
-    await ElMessageBox.confirm(
-      `确定删除整个会话吗？\n将删除其中的 ${messages.length} 封邮件。`,
-      '删除会话',
-      { confirmButtonText: '删除全部', cancelButtonText: '取消', type: 'warning' }
-    );
-  } catch {
-    return;
-  }
+    await ElMessageBox.confirm(`确定删除整个会话吗？\n将删除其中的 ${messages.length} 封邮件。`, '删除会话', { confirmButtonText: '删除全部', cancelButtonText: '取消', type: 'warning' });
+  } catch { return; }
 
   loading.value = true;
   try {
@@ -164,6 +163,7 @@ onMounted(async () => {
   loading.value = true;
   try {
     thread.value = await conversationDetail(accountStore.currentAccountId, route.query.threadId);
+    await hydrateMessages();
     const unreadIds = (thread.value?.messages || []).filter(mail => mail.type === 0 && mail.unread === 0).map(mail => mail.emailId);
     if (unreadIds.length) await emailRead(unreadIds);
   } finally {
