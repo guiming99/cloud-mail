@@ -121,6 +121,13 @@ function initEditor() {
         const text = ed.getContent({format: 'text'});
         emit('change', content, text);
       });
+      // Keep the Vue form state synchronized even when TinyMCE's input/change
+      // event is skipped by a browser or IME interaction immediately before send.
+      ed.on('blur', () => {
+        const content = ed.getContent();
+        const text = ed.getContent({format: 'text'});
+        emit('change', content, text);
+      });
       ed.on('focus', () => emit('focus', focus))
     },
     autofocus: true,
