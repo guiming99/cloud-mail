@@ -29,8 +29,8 @@
             </div>
           </div>
           <div v-show="!collapsed[index]" class="message-body">
-            <ShadowHtml v-if="shouldShowHtmlContent(mail)" :html="formatImage(mail.content)" />
-            <pre v-else>{{ mail.text || mail.content || '' }}</pre>
+            <ShadowHtml v-if="htmlContent(mail)" :html="formatImage(htmlContent(mail))" />
+            <pre v-else>{{ plainText(mail) }}</pre>
             <div v-if="mail.attList?.length" class="attachments">
               <div class="att-title">附件（{{ mail.attList.length }}）</div>
               <div v-for="att in mail.attList" :key="att.attId" class="att-item">
@@ -85,36 +85,25 @@ const deletingIds = ref([]);
 function avatarText(value = '') { const s = String(value).trim(); return s ? s[0].toUpperCase() : '?'; }
 function recipientText(value) { try { return JSON.parse(value || '[]').map(x => x.address).filter(Boolean).join(', '); } catch { return ''; } }
 function formatImage(content) { return (content || '').replace(/{{domain}}/g, toOssDomain(settingStore.settings.r2Domain) + '/'); }
-function stripHtml(content) {
-  return String(content || '')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-function shouldShowHtmlContent(mail) {
-  if (!mail?.content) return false;
-  if (!mail?.text) return true;
-
-  const htmlText = stripHtml(mail.content);
-  const text = String(mail.text).replace(/\s+/g, ' ').trim();
-  if (!htmlText) return false;
-
-  const sample = text.slice(0, Math.min(80, text.length));
-  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
-    return false;
-  }
-
-  return true;
-}
 function toggle(index) { collapsed.value[index] = !collapsed.value[index]; }
 function reply(mail) { uiStore.writerRef.openReply(mail); }
 function replyAll(mail) { uiStore.writerRef.openReplyAll(mail); }
 function forward(mail) { uiStore.writerRef.openForward(mail); }
 function back() { router.back(); }
+
+// Conversation records may contain either a normal HTML content field or an
+// HTML string in the text field. Prefer content, but never render HTML as raw
+// text. This keeps the conversation view independent of ShadowHtml itself.
+function htmlContent(mail) {
+  if (mail?.content) return String(mail.content);
+  const text = mail?.text == null ? '' : String(mail.text);
+  if (/<(?:div|p|br|table|tr|td|span|a|img|ul|ol|li|h[1-6]|strong|em|blockquote)\b/i.test(text)) return text;
+  return '';
+}
+
+function plainText(mail) {
+  return mail?.text == null ? '' : String(mail.text);
+}
 
 async function deleteMail(mail) {
   try {
