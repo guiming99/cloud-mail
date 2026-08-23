@@ -1,0 +1,71 @@
+name: Temporary email body repair
+
+on:
+  push:
+    branches:
+      - fix/email-body-final
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch email body handling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          write = Path('mail-vue/src/layout/write/index.vue')
+          s = write.read_text()
+          old = '''  if (!form.content) {\n    form.content = editor.value.getContent();\n  }\n\n  form.content = applySignature(form.content, form.accountId);'''
+          new = '''  const editorContent = editor.value?.getContent ? editor.value.getContent() : '';\n  const editorText = editor.value?.getContent ? editor.value.getContent({format: 'text'}) : '';\n  if (editorContent) {\n    form.content = editorContent;\n  }\n  if (editorText) {\n    form.text = editorText;\n  }\n\n  form.content = applySignature(form.content, form.accountId);'''
+          if old not in s:
+              raise SystemExit('sendEmail target not found')
+          s = s.replace(old, new, 1)
+
+          marker = '''function openForward(email) {'''
+          helper = '''function emailContentForQuote(email) {\n  const html = formatImage(email.content || '');\n  const text = String(email.text || '').trim();\n  if (!html) return text ? `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${escapeEmailText(text)}</pre>` : '';\n  if (!text) return html;\n\n  const htmlText = normalizeEmailText(stripEmailHtml(html));\n  const normalizedText = normalizeEmailText(text);\n  const sample = normalizedText.slice(0, Math.min(80, normalizedText.length));\n\n  if (sample.length >= 20 && !htmlText.includes(sample) && normalizedText.length > htmlText.length + 20) {\n    return `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${escapeEmailText(text)}</pre>`;\n  }\n  return html;\n}\n\nfunction stripEmailHtml(html) {\n  return String(html || '')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction normalizeEmailText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction escapeEmailText(value) {\n  return String(value || '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\n'''
+          if marker not in s:
+              raise SystemExit('quote helper insertion point not found')
+          s = s.replace(marker, helper + marker, 1)
+
+          old_quote = '''${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}'''
+          count = s.count(old_quote)
+          if count != 2:
+              raise SystemExit(f'expected 2 quote fallback sites, found {count}')
+          s = s.replace(old_quote, '${emailContentForQuote(email)}')
+          write.write_text(s)
+
+          content = Path('mail-vue/src/views/content/index.vue')
+          s = content.read_text()
+          old = '''  const htmlText = stripHtml(email.content);\n  const text = String(email.text).replace(/\\s+/g, ' ').trim();\n  if (!htmlText) return false;\n\n  // If the HTML is only a trailing signature while the plain-text body contains\n  // substantially more content, prefer the complete plain-text body.\n  if (text.length > htmlText.length && text.endsWith(htmlText)) {\n    return false;\n  }\n\n  return true;'''
+          new = '''  const htmlText = stripHtml(email.content);\n  const text = String(email.text).replace(/\\s+/g, ' ').trim();\n  if (!htmlText) return false;\n\n  // If the HTML does not contain the beginning of the plain-text body and is\n  // substantially shorter, it is usually a signature-only/stale HTML part.\n  const sample = text.slice(0, Math.min(80, text.length));\n  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {\n    return false;\n  }\n\n  return true;'''
+          if old not in s:
+              raise SystemExit('detail fallback target not found')
+          s = s.replace(old, new, 1)
+          content.write_text(s)
+      - name: Build frontend
+        working-directory: mail-vue
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.12.1 --activate
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Diff check
+        run: git diff --check
+      - name: Commit and push repaired code
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix-email-body-final.yml
+          git add mail-vue/src/layout/write/index.vue mail-vue/src/views/content/index.vue
+          git add -u .github/workflows/fix-email-body-final.yml
+          git commit -m "fix: preserve and render email body correctly"
+          git push origin HEAD:fix/email-body-final
