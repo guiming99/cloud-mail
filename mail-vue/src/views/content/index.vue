@@ -44,7 +44,6 @@
               <span>{{$t('attCount',{total: email.attList.length})}}</span>
             </div>
             <div class="att-box">
-
               <div class="att-item" v-for="att in email.attList" :key="att.attId">
                 <div class="att-icon" @click="showImage(att.key)">
                   <Icon v-bind="getIconByName(att.filename)" />
@@ -65,12 +64,7 @@
         </div>
       </div>
     </el-scrollbar>
-    <el-image-viewer
-        v-if="showPreview"
-        :url-list="srcList"
-        show-progress
-        @close="showPreview = false"
-    />
+    <el-image-viewer v-if="showPreview" :url-list="srcList" show-progress @close="showPreview = false" />
   </div>
 </template>
 <script setup>
@@ -78,7 +72,7 @@ import ShadowHtml from '@/components/shadow-html/index.vue'
 import {reactive, ref, watch, onMounted, onUnmounted} from "vue";
 import {useRouter} from 'vue-router'
 import {ElMessage, ElMessageBox} from 'element-plus'
-import {emailDelete, emailRead} from "@/request/email.js";
+import {emailDelete, emailRead, emailLatest} from "@/request/email.js";
 import {Icon} from "@iconify/vue";
 import {useEmailStore} from "@/store/email.js";
 import {useAccountStore} from "@/store/account.js";
@@ -98,7 +92,7 @@ const settingStore = useSettingStore();
 const accountStore = useAccountStore();
 const emailStore = useEmailStore();
 const router = useRouter()
-const email = emailStore.contentData.email
+const email = reactive({ ...(emailStore.contentData.email || {}) })
 const showPreview = ref(false)
 const srcList = reactive([])
 
@@ -107,7 +101,16 @@ watch(() => accountStore.currentAccountId, () => {
   handleBack()
 })
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    if (email.emailId) {
+      const full = await emailLatest(email.emailId, accountStore.currentAccountId, email.allReceive ?? 0)
+      if (full && typeof full === 'object') Object.assign(email, full)
+    }
+  } catch (error) {
+    console.warn('Failed to load full email detail, using cached email:', error)
+  }
+
   if (emailStore.contentData.showUnread && email.unread === EmailUnreadEnum.UNREAD) {
     email.unread = EmailUnreadEnum.READ;
     emailRead([email.emailId]);
@@ -129,340 +132,51 @@ function handleKeyDown(event) {
   handleBack();
 }
 
-function openReply() {
-  uiStore.writerRef.openReply(email)
-}
-
-function openForward() {
-  uiStore.writerRef.openForward(email)
-}
-
-function toMessage(message) {
-  return  message ? JSON.parse(message).message : '';
-}
-
-function formatImage(content) {
-  content = content || '';
-  const domain = settingStore.settings.r2Domain;
-  return  content.replace(/{{domain}}/g, toOssDomain(domain) + '/');
-}
-
+function openReply() { uiStore.writerRef.openReply(email) }
+function openForward() { uiStore.writerRef.openForward(email) }
+function toMessage(message) { return message ? JSON.parse(message).message : ''; }
+function formatImage(content) { content = content || ''; const domain = settingStore.settings.r2Domain; return content.replace(/{{domain}}/g, toOssDomain(domain) + '/'); }
 function shouldShowHtmlContent() {
   if (!email.content) return false;
   if (!email.text) return true;
-
   const htmlText = stripHtml(email.content);
   const text = String(email.text).replace(/\s+/g, ' ').trim();
   if (!htmlText) return false;
-
-  // If the HTML does not contain the beginning of the plain-text body and is
-  // substantially shorter, it is usually a signature-only/stale HTML part.
   const sample = text.slice(0, Math.min(80, text.length));
-  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) {
-    return false;
-  }
-
+  if (sample.length >= 20 && !htmlText.includes(sample) && text.length > htmlText.length + 20) return false;
   return true;
 }
-
 function stripHtml(content) {
-  return String(content || '')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return String(content || '').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
 }
-
-function showImage(key) {
-  if (!isImage(key)) return;
-  const url = cvtR2Url(key)
-  srcList.length = 0
-  srcList.push(url)
-  showPreview.value = true
-}
-
-function isImage(filename) {
-  return ['png', 'jpg', 'jpeg', 'bmp', 'gif','jfif'].includes(getExtName(filename))
-}
-
-function formateReceive(recipient) {
-  recipient = JSON.parse(recipient)
-  return recipient.map(item => item.address).join(', ')
-}
-
+function showImage(key) { if (!isImage(key)) return; const url = cvtR2Url(key); srcList.length = 0; srcList.push(url); showPreview.value = true; }
+function isImage(filename) { return ['png', 'jpg', 'jpeg', 'bmp', 'gif','jfif'].includes(getExtName(filename)) }
+function formateReceive(recipient) { recipient = JSON.parse(recipient); return recipient.map(item => item.address).join(', ') }
 function changeStar() {
   if (email.isStar) {
     email.isStar = 0;
-    starCancel(email.emailId).then(() => {
-      email.isStar = 0;
-      emailStore.cancelStarEmailId = email.emailId
-      setTimeout(() => emailStore.cancelStarEmailId = 0)
-      emailStore.starScroll?.deleteEmail([email.emailId])
-    }).catch((e) => {
-      console.error(e)
-      email.isStar = 1;
-    })
+    starCancel(email.emailId).then(() => { email.isStar = 0; emailStore.cancelStarEmailId = email.emailId; setTimeout(() => emailStore.cancelStarEmailId = 0); emailStore.starScroll?.deleteEmail([email.emailId]) }).catch((e) => { console.error(e); email.isStar = 1; })
   } else {
     email.isStar = 1;
-    starAdd(email.emailId).then(() => {
-      email.isStar = 1;
-      emailStore.addStarEmailId = email.emailId
-      setTimeout(() => emailStore.addStarEmailId = 0)
-      emailStore.starScroll?.addItem(email)
-    }).catch((e) => {
-      console.error(e)
-      email.isStar = 0;
-    })
+    starAdd(email.emailId).then(() => { email.isStar = 1; emailStore.addStarEmailId = email.emailId; setTimeout(() => emailStore.addStarEmailId = 0); emailStore.starScroll?.addItem(email) }).catch((e) => { console.error(e); email.isStar = 0; })
   }
 }
-
-const handleBack = () => {
-  router.back()
-}
-
+const handleBack = () => { router.back() }
 const handleDelete = () => {
-  ElMessageBox.confirm(t('delEmailConfirm'), {
-    confirmButtonText: t('confirm'),
-    cancelButtonText: t('cancel'),
-    type: 'warning'
-  }).then(() => {
+  ElMessageBox.confirm(t('delEmailConfirm'), { confirmButtonText: t('confirm'), cancelButtonText: t('cancel'), type: 'warning' }).then(() => {
     if (emailStore.contentData.delType === 'logic') {
-      emailDelete(email.emailId).then(() => {
-        ElMessage({
-          message: t('delSuccessMsg'),
-          type: 'success',
-          plain: true,
-        })
-        emailStore.deleteIds = [email.emailId]
-      })
-    } else  {
-
-      allEmailDelete(email.emailId).then(() => {
-        ElMessage({
-          message: t('delSuccessMsg'),
-          type: 'success',
-          plain: true,
-        })
-        emailStore.deleteIds = [email.emailId]
-      })
+      emailDelete(email.emailId).then(() => { ElMessage({ message: t('delSuccessMsg'), type: 'success', plain: true }); emailStore.deleteIds = [email.emailId] })
+    } else {
+      allEmailDelete(email.emailId).then(() => { ElMessage({ message: t('delSuccessMsg'), type: 'success', plain: true }); emailStore.deleteIds = [email.emailId] })
     }
-
     router.back()
   })
 }
 </script>
 <style scoped lang="scss">
-.box {
-  height: 100%;
-  overflow: hidden;
-}
-
-.header-actions {
-  padding: 9px 15px 8px;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  box-shadow: var(--header-actions-border);
-  font-size: 18px;
-  .star {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 21px;
-  }
-  .icon {
-    cursor: pointer;
-  }
-}
-
-
-.scrollbar {
-  height: calc(100% - 38px);
-  width: 100%;
-}
-
-.container {
-  font-size: 14px;
-  padding-left: 20px;
-  padding-right: 20px;
-  padding-top: 10px;
-  @media (max-width: 1023px) {
-    padding-left: 15px;
-    padding-right: 15px;
-  }
-
-  .email-title {
-    font-size: 20px;
-    font-weight: bold;
-    margin-bottom: 10px;
-  }
-
-  .htm-scrollbar {
-  }
-
-  .content {
-    display: flex;
-    flex-direction: column;
-
-    .att {
-      margin-top: 30px;
-      margin-bottom: 30px;
-      border: 1px solid var(--light-border-color);
-      padding: 14px;
-      border-radius: 6px;
-      width: fit-content;
-      .att-box {
-        min-width: min(410px,calc(100vw - 60px));
-        max-width: 600px;
-        display: grid;
-        gap: 12px;
-        grid-template-rows: 1fr;
-      }
-
-      .att-title {
-        margin-bottom: 8px;
-        display: flex;
-        justify-content: space-between;
-        span:first-child {
-          font-weight: bold;
-        }
-      }
-
-      .att-item {
-        cursor: pointer;
-        div {
-          align-self: center;
-        }
-        background: var(--light-ill);
-        padding: 5px 7px;
-        border-radius: 4px;
-        align-self: start;
-        display: grid;
-        grid-template-columns: auto 1fr auto auto;
-        .att-icon {
-          display: grid;
-        }
-
-        .att-size {
-          color: var(--secondary-text-color);
-        }
-
-        .att-name {
-          margin-left: 8px;
-          margin-right: 8px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          word-break: break-all;
-        }
-
-        .att-image {
-          width: 60px;
-          height: 60px;
-          object-fit: contain;
-        }
-
-        .opt-icon {
-          padding-left: 10px;
-          color: var(--secondary-text-color);
-          align-items: center;
-          display: flex;
-          gap: 8px;
-          cursor: pointer;
-          a {
-            color: var(--secondary-text-color);
-            align-items: center;
-            display: flex;
-          }
-        }
-      }
-    }
-
-    .email-info {
-
-      border-bottom: 1px solid var(--light-border-color);
-      margin-bottom: 20px;
-      padding-bottom: 8px;
-      @media (max-width: 1024px) {
-        margin-bottom: 15px;
-      }
-      .date {
-        color: var(--regular-text-color);
-        margin-bottom: 6px;
-      }
-
-      .email-msg {
-        max-width: 400px;
-        width: fit-content;
-        margin-bottom: 15px;
-      }
-
-      .send {
-        display: flex;
-        margin-bottom: 6px;
-
-        .send-name {
-          color: var(--regular-text-color);
-          display: flex;
-          flex-wrap: wrap;
-        }
-
-        .send-name-title {
-          padding-right: 5px;
-        }
-      }
-
-      .receive {
-        margin-bottom: 6px;
-        display: flex;
-        .receive-email {
-          max-width: 700px;
-          word-break: break-word;
-        }
-        span:nth-child(2) {
-          color: var(--regular-text-color);
-        }
-      }
-
-      .send-source {
-        white-space: nowrap;
-        font-weight: bold;
-        padding-right: 10px;
-      }
-
-      .source {
-        white-space: nowrap;
-        font-weight: bold;
-        padding-right: 10px;
-      }
-    }
-  }
-}
-
-.shadow-html::after  {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--message-block-color); /* 半透明黑色蒙层 */
-  pointer-events: none; /* 不影响点击 */
-}
-
-.email-text {
-  font-family: inherit;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-}
-
-.bottom-distance {
-  margin-bottom: 30px;
-}
-
-
+.box { height:100%; overflow:hidden; }
+.header-actions { padding:9px 15px 8px; display:flex; align-items:center; gap:20px; box-shadow:var(--header-actions-border); font-size:18px; .star{display:flex;align-items:center;justify-content:center;min-width:21px}.icon{cursor:pointer} }
+.scrollbar { height:calc(100% - 38px); width:100%; }
+.container { font-size:14px; padding-left:20px; padding-right:20px; padding-top:10px; @media(max-width:1023px){padding-left:15px;padding-right:15px} .email-title{font-size:20px;font-weight:bold;margin-bottom:10px}.htm-scrollbar{} .content{display:flex;flex-direction:column;.att{margin-top:30px;margin-bottom:30px;border:1px solid var(--light-border-color);padding:14px;border-radius:6px;width:fit-content;.att-box{min-width:min(410px,calc(100vw - 60px));max-width:600px;display:grid;gap:12px;grid-template-rows:1fr}.att-title{margin-bottom:8px;display:flex;justify-content:space-between;span:first-child{font-weight:bold}}.att-item{cursor:pointer;div{align-self:center}background:var(--light-ill);padding:5px 7px;border-radius:4px;align-self:start;display:grid;grid-template-columns:auto 1fr auto auto;.att-icon{display:grid}.att-size{color:var(--secondary-text-color)}.att-name{margin-left:8px;margin-right:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:break-all}.att-image{width:60px;height:60px;object-fit:contain}.opt-icon{padding-left:10px;color:var(--secondary-text-color);align-items:center;display:flex;gap:8px;cursor:pointer;a{color:var(--secondary-text-color);align-items:center;display:flex}}}}.email-info{border-bottom:1px solid var(--light-border-color);margin-bottom:20px;padding-bottom:8px;@media(max-width:1024px){margin-bottom:15px}.date{color:var(--regular-text-color);margin-bottom:6px}.email-msg{max-width:400px;width:fit-content;margin-bottom:15px}.send{display:flex;margin-bottom:6px;.send-name{color:var(--regular-text-color);display:flex;flex-wrap:wrap}.send-name-title{padding-right:5px}}.receive{margin-bottom:6px;display:flex;.receive-email{max-width:700px;word-break:break-word}span:nth-child(2){color:var(--regular-text-color)}}.send-source,.source{white-space:nowrap;font-weight:bold;padding-right:10px}}}}
+.shadow-html::after{content:"";position:absolute;top:0;left:0;right:0;bottom:0;background:var(--message-block-color);pointer-events:none}.email-text{font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0}.bottom-distance{margin-bottom:30px}
 </style>
